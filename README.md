@@ -4,7 +4,8 @@
 automation powered by Browserbase and a compact web interface. This standalone repository owns
 Bell's agent, interface, and configuration.
 The pinned `browsie` package supplies Stagehand/Browserbase session management, browser tools,
-Contexts, human handoff, and optional 1Password access.
+Contexts, human handoff, and optional 1Password access. Bell adds Linq iMessage/SMS messaging
+with a signed webhook and a private sender list.
 
 ## Run locally
 
@@ -47,6 +48,9 @@ The dependency is pinned to that commit, not a moving branch. See
   Save a Login item with the destination website, username, and password before asking Bell to log in.
   Add a one-time password field if the site uses TOTP. The shared vault tools enforce the saved
   website host and resolve credentials on the server. A URL alone does not provide a login.
+- Linq: text Bell at **+1 628-298-8686** after configuring your Linq API key, webhook signing
+  secret, and personal sending number. Follow the [Linq setup and phone demo](docs/linq.md).
+  Each Linq chat keeps its own conversation and browser. Baselayer is not required for browsing.
 - Handoff: set a random `BROWSIE_HANDOFF_SECRET` of at least 32 characters and
   `BROWSIE_PUBLIC_URL` to the app's reachable origin. Configure this before asking for a handoff.
 
