@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
     "setup:runtime": "git submodule update --init --recursive && pnpm --dir vendor/cookbook/projects/browsie install --frozen-lockfile && pnpm --dir vendor/cookbook/projects/browsie build:library",
-    "check": "pnpm test && pnpm typecheck && pnpm lint && pnpm build"
+    "check": "pnpm test && pnpm typecheck && pnpm lint && pnpm build",
+    "baselayer:mint": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/mint-baselayer-credential.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "4.0.46",

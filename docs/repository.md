@@ -6,7 +6,9 @@ Its application files sit at the repository root:
 ```text
 agent/                  Eve agent, Linq channel, shared tool imports
 app/                    Web interface and human handoff routes
-tests/                  Browser interface and signed webhook tests
+server/                 Baselayer minting and one-request merchant proof
+scripts/                Standalone mint command
+tests/                  Browser interface, Linq, and merchant-access tests
 docs/                   Setup and demo guides
 vendor/cookbook/         Git submodule containing the shared Browsie package
 .env.example            Server configuration template
@@ -29,9 +31,10 @@ A future published Browsie package could replace the submodule without changing 
 Until then, changing that dependency is an explicit Git submodule update followed by setup,
 installation, tests, typecheck, lint, and build. Do not update it automatically to Cookbook main.
 
-This stage includes the browser assistant, web interface, and signed Linq messaging channel.
-Linq uses the same agent tools in a separate conversation for each phone chat. Baselayer merchant
-access, Stripe Link CLI, and Visa checkout remain follow-up integrations.
+This stage adds Baselayer minting and merchant access to the browser assistant, web interface,
+and signed Linq messaging channel. The merchant verifier remains a separate deployment. Linq
+uses the same agent tools in a separate conversation for each phone chat. Stripe Link CLI and
+Visa checkout remain follow-up integrations.
 
 The original Cookbook drafts remain separate from this repository. Keep the shared-runtime change
 in Cookbook. Once Bell's standalone draft is published, the Bell app and merchant-access drafts

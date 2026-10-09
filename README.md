@@ -2,7 +2,7 @@
 
 **Ring the BELL and put your personal assistant to work.** Bell pairs an Eve agent with browser
 automation powered by Browserbase and a compact web interface. This standalone repository owns
-Bell's agent, interface, and configuration.
+Bell's agent, interface, configuration, and merchant integration.
 The pinned `browsie` package supplies Stagehand/Browserbase session management, browser tools,
 Contexts, human handoff, and optional 1Password access. Bell adds Linq iMessage/SMS messaging
 with a signed webhook and a private sender list.
@@ -37,6 +37,19 @@ The initial runtime pin is Cookbook commit `bcda925b87a42e5100b122739a6446662964
 from [the shared-runtime draft PR](https://github.com/browserbase/cookbook/pull/27).
 The dependency is pinned to that commit, not a moving branch. See
 [the repository layout and dependency notes](docs/repository.md).
+
+## Baselayer merchant access
+
+Bell can mint a short-lived L2 credential, bind it to a merchant nonce, and present it on one
+approved browser request using `merchant_access`. Configure the sandbox API key, verified
+principal, and exact merchant origin in `.env.local`. Keep `BROWSIE_LOG_SESSION=false` before
+starting the browser. [Follow the Baselayer setup and verification guide](docs/baselayer.md).
+
+The protected demo is `https://bell-stack-demo-site.vercel.app/protected`. Ordinary navigation
+should be denied; successful `merchant_access` should return HTTP 200. Sandbox credentials
+usually expire after about one hour; check the returned expiry. Live access requires a current
+verified principal from the same sandbox organization as the API key.
+Best Buy browsing does not require Baselayer and does not demonstrate merchant verification.
 
 ## Optional integrations
 

@@ -85,4 +85,5 @@ signatures, wrong lines or senders, groups, bot echoes, outbound messages, and i
 
 A live phone round trip also needs the actual Linq credentials, reachable webhook, allowed sender,
 and Browserbase/OpenAI credentials. A local relay lasts only while its process and Bell are running.
-Baselayer-protected merchant access and payment integrations are outside this PR.
+For Baselayer-protected merchant access, follow [the separate sandbox flow](baselayer.md).
+It needs a compatible merchant and a current verified principal. Payment integrations are future work.
