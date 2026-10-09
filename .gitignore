@@ -1,6 +1,7 @@
 node_modules/
 .next/
 .eve/
+.browsie/
 .output/
 .vercel/
 .env*
