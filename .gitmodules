@@ -1,0 +1,3 @@
+[submodule "vendor/cookbook"]
+	path = vendor/cookbook
+	url = https://github.com/browserbase/cookbook.git

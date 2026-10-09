@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.eve/
+.output/
+.vercel/
+.env*
+!.env.example
+*.tsbuildinfo
+coverage/
+.DS_Store
+.pnpm-store/

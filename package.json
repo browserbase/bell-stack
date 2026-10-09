@@ -1,0 +1,46 @@
+{
+  "name": "bell-stack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "packageManager": "pnpm@10.33.4",
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 4320",
+    "build": "eve build --skip-sandbox-prewarm && next build",
+    "start": "next start --hostname 127.0.0.1 --port 4320",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "setup:runtime": "git submodule update --init --recursive && pnpm --dir vendor/cookbook/projects/browsie install --frozen-lockfile && pnpm --dir vendor/cookbook/projects/browsie build:library",
+    "check": "pnpm test && pnpm typecheck && pnpm lint && pnpm build"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "4.0.46",
+    "@browserbasehq/sdk": "2.18.0",
+    "eve": "0.47.6",
+    "next": "16.3.8",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.6.5",
+    "browsie": "file:vendor/cookbook/projects/browsie",
+    "@browserbasehq/stagehand": "4.0.2",
+    "playwright-core": "1.62.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.8",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/browserbase/bell-stack.git"
+  },
+  "license": "MIT"
+}
