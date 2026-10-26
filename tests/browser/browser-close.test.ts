@@ -17,6 +17,7 @@ import Browserbase from "@browserbasehq/sdk";
 import { BrowserSession } from "../../server/browser/browser-session";
 import type { ConversationState } from "../../server/browser/types";
 import { browserChannelEvents, closeBrowserRuntime, hasBrowserRuntime, runBrowserOperation } from "../../agent/lib/browser-runtime";
+import taskHooks from "../../agent/hooks/task-state";
 import { taskState } from "../../agent/lib/task-state";
 import { ContextContainer, contextStorage } from "../../node_modules/eve/dist/src/context/container.js";
 
@@ -104,5 +105,23 @@ describe("terminal cleanup in a fresh Eve worker", () => {
         release.mockResolvedValue({ status: "COMPLETED" });
         await closeBrowserRuntime(id);
       }
+    }));
+    
+  it("turn.cancelled releases the persisted browser before clearing its ID", () =>
+    contextStorage.run(new ContextContainer(), async () => {
+      const id = "fresh-worker-cancel";
+      taskState.update((current) => ({
+        ...current,
+        browser: { lifecycle: "active", sessionId: "persisted-browser" },
+      }));
+      release.mockResolvedValue({ status: "COMPLETED" });
+      await taskHooks.events!["turn.cancelled"]!(
+        { type: "turn.cancelled", meta: { id: "evt_cancel" } } as never,
+        { session: { id } } as never,
+      );
+      expect(release).toHaveBeenCalledExactlyOnceWith("persisted-browser", { status: "REQUEST_RELEASE" });
+      expect(taskState.get()).toMatchObject({ status: "canceled", browser: { lifecycle: "closed" } });
+      expect(taskState.get().browser.sessionId).toBeUndefined();
+      expect(hasBrowserRuntime(id)).toBe(false);
     }));
 });

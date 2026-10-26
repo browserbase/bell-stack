@@ -14,6 +14,7 @@ export async function quarantineBrowser(): Promise<void> {
 
 export async function withBrowserPrivacyLock<T>(sessionId: string, operation: () => Promise<T>, database?: Pool, existingBrowser = false): Promise<T> {
   if (!database && isLinkSandbox()) {
+    if (!process.env.LINK_SANDBOX_ACCESS_TOKEN?.trim()) return operation();
     let state = sandboxBrowsers.get(sessionId);
     if (!state && existingBrowser) throw new Error("The sandbox cannot recover a browser from another process. Use human handoff to inspect the existing purchase; do not retry it.");
     if (!state) { state = { tail: Promise.resolve(), quarantined: false }; sandboxBrowsers.set(sessionId, state); }

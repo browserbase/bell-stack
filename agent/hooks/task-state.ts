@@ -7,9 +7,10 @@ const update = (event: HookEvent, ctx: { session: { id: string } }) =>
   taskState.update((current) => applyTaskEvent(current, event, ctx.session.id));
 
 const cancel = async (event: HookEvent<"turn.cancelled">, ctx: { session: { id: string } }) => {
-  update(event, ctx);
   await closeBrowserRuntime(ctx.session.id);
+  update(event, ctx);
 };
+
 export default defineHook({
   events: {
     "session.started": update,
