@@ -52,6 +52,6 @@ describe("configured vault discovery", () => {
 
 it("does not expose the operator's vault to an iMessage sender", async () => {
   mocks.onePasswordList.mockClear();
-  await expect(vaultList.execute({ provider: "onepassword" }, { session: { auth: { current: { authenticator: "linq-message" } } } } as never)).rejects.toThrow("personal credentials");
+  await expect(vaultList.execute({ provider: "onepassword" }, { session: { auth: { current: { authenticator: "photon-imessage" } } } } as never)).rejects.toThrow("personal credentials");
   expect(mocks.onePasswordList).not.toHaveBeenCalled();
 });

@@ -18,7 +18,7 @@ describe("personal 1Password rollout", () => {
     vi.stubEnv("BROWSERBASE_1PASSWORD_EXTENSION_ID", "");
     vi.stubEnv("BROWSERBASE_CONTEXT_ID", "");
     mocks.service.mockReturnValue({ disconnect: mocks.disconnect });
-    ctx = { session: { id: "conversation", auth: { current: { principalType: "user", authenticator: "linq-message", issuer: "linq", principalId: "linq:sender" } } }, getToken: vi.fn() } as unknown as ToolContext;
+    ctx = { session: { id: "conversation", auth: { current: { principalType: "user", authenticator: "photon-imessage", issuer: "photon", principalId: "photon:" + "a".repeat(64), subject: "phone:+12025550123", attributes: { "photon:audience": "direct" } } } }, getToken: vi.fn() } as unknown as ToolContext;
   });
   afterEach(() => vi.unstubAllEnvs());
   it.each([undefined, "", "false", "0", "TRUE"])("blocks consent and login before side effects when enabled=%s", async enabled => {
@@ -46,7 +46,7 @@ describe("personal 1Password rollout", () => {
   it("keeps disconnect and previously issued callback completion available", async () => {
     mocks.disconnect.mockResolvedValue({ status: "disconnected" });
     expect(await disconnect.execute({}, ctx)).toEqual({ status: "disconnected" });
-    expect(mocks.disconnect).toHaveBeenCalledWith({ type: "user", issuer: "linq", id: "linq:sender" });
+    expect(mocks.disconnect).toHaveBeenCalledWith({ type: "user", issuer: "photon", id: "photon:" + "a".repeat(64) });
     const capture = vi.fn().mockResolvedValue("https://bell.example/eve/v1/connections/op/callback/id/hook");
     const response = await onePasswordPost(new Request("https://bell.example/api/onepassword/complete", { method: "POST", headers: { origin: "https://bell.example", "content-type": "application/json" }, body: JSON.stringify({ state: "s".repeat(43), code: "issued-code" }) }), "complete", () => ({ config: { origin: "https://bell.example" }, capture }) as never);
     expect(response.status).toBe(200);
