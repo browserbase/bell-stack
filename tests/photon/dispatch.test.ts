@@ -1,8 +1,7 @@
 /**
  * Dispatch pipeline: durable intents, the internal route contract, and the
- * fixed-session binding. Store-level behaviors run now; the worker's
- * `dispatchPending` state machine is a parallel workstream module — those
- * describes skip while `server/photon/dispatch.ts` is absent.
+ * fixed-session binding. Store-level behaviors and the worker dispatcher
+ * both run against the in-memory PhotonDb seam.
  */
 import { describe, expect, it, vi } from "vitest";
 
@@ -11,6 +10,7 @@ import {
   type PhotonConfig,
 } from "../../server/photon/config";
 import type { PhotonEventEnvelope, PhotonDispatchResult } from "../../server/photon/contracts";
+import { createDispatcher } from "../../server/photon/dispatch";
 import {
   bindingIdFor,
   dispatchKeyFor,
@@ -19,7 +19,7 @@ import {
 } from "../../server/photon/identity";
 import type { PhotonDb } from "../../server/photon/store";
 
-import { envelope, inMemoryDb, optionalModule, payloadHashFor, testConfig } from "./fixtures/harness";
+import { envelope, inMemoryDb, payloadHashFor, testConfig } from "./fixtures/harness";
 import * as fx from "./fixtures/sdk-events";
 
 const SOURCE_ID = sourceIdFor("test-project-0001", "inst-aaaa-bbbb", fx.RECEIVING_LINE);
@@ -47,7 +47,7 @@ async function capture(db: PhotonDb, seq: number, env: PhotonEventEnvelope, disp
 function admittedEnvelope(seq: number, chatGuid = fx.DIRECT_CHAT): PhotonEventEnvelope {
   return envelope(
     { family: "message", type: "received", message: fx.message({ guid: `m-${seq}`, chatGuids: [chatGuid] }) },
-    { sequence: String(seq), chatGuid },
+    { sequence: String(seq), chatGuid, actor: `phone:${fx.OPERATOR_PHONE}` },
   );
 }
 
@@ -111,29 +111,22 @@ describe("dispatch intent ledger", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* dispatchPending — transport workstream module                       */
+/* createDispatcher — transport workstream module                      */
 /* ------------------------------------------------------------------ */
 
-interface DispatchModule {
-  dispatchPending(
-    db: PhotonDb,
-    config: PhotonConfig,
-    options?: {
-      fetch?: typeof fetch;
-      batchSize?: number;
-      now?: () => Date;
-      correlationId?: string;
-    },
-  ): Promise<{ dispatched: number; stateApplied: number; retried: number; rejected: number }>;
-}
-
-const dispatch = await optionalModule<DispatchModule>("../../../server/photon/dispatch.ts");
-
-describe.skipIf(!dispatch)("dispatchPending (server/photon/dispatch.ts)", () => {
+describe("dispatch pipeline (server/photon/dispatch.ts)", () => {
   const config = testConfig();
 
   function fakeDispatch(result: PhotonDispatchResult) {
     return vi.fn<typeof fetch>(async () => Response.json(result));
+  }
+
+  /** One dispatcher tick over the seam; returns the settled-row count. */
+  function runOnce(db: PhotonDb, cfg: PhotonConfig, fetcher: typeof fetch) {
+    return createDispatcher({
+      store: db, config: cfg, sourceId: SOURCE_ID, logEpoch: EPOCH,
+      fetcher, batchSize: 10,
+    }).runOnce();
   }
 
   it("POSTs an admitted row to the private route and records the durable result", async () => {
@@ -141,7 +134,7 @@ describe.skipIf(!dispatch)("dispatchPending (server/photon/dispatch.ts)", () => 
     const env = admittedEnvelope(1);
     await capture(db, 1, env);
     const fetcher = fakeDispatch({ status: "dispatched", sessionId: "eve-session-1", deliveryId: "del-1" });
-    await dispatch!.dispatchPending(db, config, { fetch: fetcher });
+    await runOnce(db, config, fetcher);
 
     expect(fetcher).toHaveBeenCalledOnce();
     const [input, init] = fetcher.mock.calls[0];
@@ -165,7 +158,7 @@ describe.skipIf(!dispatch)("dispatchPending (server/photon/dispatch.ts)", () => 
     const db = await seededDb();
     await capture(db, 2, admittedEnvelope(2));
     const fetcher = fakeDispatch({ status: "retryable", reason: "eve busy" });
-    await dispatch!.dispatchPending(db, config, { fetch: fetcher });
+    await runOnce(db, config, fetcher);
     const row = await db.getInboxRow({ sourceId: SOURCE_ID, logEpoch: EPOCH, sequence: "2" });
     expect(row?.processingState).toBe("captured");
     expect(row?.attempts ?? 0).toBeGreaterThanOrEqual(1);
@@ -175,25 +168,28 @@ describe.skipIf(!dispatch)("dispatchPending (server/photon/dispatch.ts)", () => 
     const db = await seededDb();
     await capture(db, 3, admittedEnvelope(3));
     const fetcher = fakeDispatch({ status: "rejected", reason: "retired session" });
-    await dispatch!.dispatchPending(db, config, { fetch: fetcher });
+    await runOnce(db, config, fetcher);
     const row = await db.getInboxRow({ sourceId: SOURCE_ID, logEpoch: EPOCH, sequence: "3" });
     expect(["quarantined", "failed"]).toContain(row?.processingState);
   });
 
-  it("applies state_only events without ever calling the dispatch route", async () => {
+  it("delivers state_only events as context, never as a model turn", async () => {
     const db = await seededDb();
     const stateEvent = envelope(
       { family: "chat", type: "markedRead" },
       { sequence: "4", chatGuid: fx.DIRECT_CHAT },
     );
     await capture(db, 4, stateEvent, "state_only");
-    const fetcher = fakeDispatch({ status: "dispatched", sessionId: "s" });
-    const result = await dispatch!.dispatchPending(db, config, { fetch: fetcher });
-    expect(fetcher).not.toHaveBeenCalled();
-    expect(result.dispatched).toBe(0);
-    expect(result.stateApplied).toBeGreaterThanOrEqual(1);
+    const fetcher = fakeDispatch({ status: "state_applied" });
+    await runOnce(db, config, fetcher);
+    // The state event still reaches the bound session as context through the
+    // internal route — the route applies state and never opens a turn.
+    expect(fetcher).toHaveBeenCalledOnce();
     const row = await db.getInboxRow({ sourceId: SOURCE_ID, logEpoch: EPOCH, sequence: "4" });
     expect(["settled", "dispatched"]).toContain(row?.processingState);
+    const intent = await db.getIntentByKey(dispatchKeyFor(SOURCE_ID, EPOCH, "4", "state_apply"));
+    expect(intent?.action).toBe("state_apply");
+    expect(intent?.status).toBe("accepted");
   });
 
   it("refreshes membership before dispatch for a participant join", async () => {
@@ -209,17 +205,16 @@ describe.skipIf(!dispatch)("dispatchPending (server/photon/dispatch.ts)", () => 
     );
     await capture(db, 5, joined, "state_only");
     const fetcher = fakeDispatch({ status: "state_applied" });
-    await dispatch!.dispatchPending(db, groupConfigSeam(), { fetch: fetcher });
+    await runOnce(db, groupConfigSeam(), fetcher);
     const conversation = await db.getConversationById(bindingId);
     expect(conversation?.membership).toContain(`phone:${fx.STRANGER_PHONE}`);
-    expect(fetcher).not.toHaveBeenCalled();
 
     function groupConfigSeam() {
       return testConfig({ allowedGroups: [fx.GROUP_CHAT] });
     }
   });
 
-  it("rejects a late event for a retired conversation instead of reopening it", async () => {
+  it("a late event for a retired conversation opens a fresh generation — never reopens the retired one", async () => {
     const db = await seededDb();
     const bindingId = bindingIdFor(SOURCE_ID, fx.DIRECT_CHAT, 1);
     await db.upsertConversation({
@@ -229,13 +224,20 @@ describe.skipIf(!dispatch)("dispatchPending (server/photon/dispatch.ts)", () => 
     await db.retireConversation(bindingId);
     await capture(db, 6, admittedEnvelope(6));
     const fetcher = fakeDispatch({ status: "dispatched", sessionId: "eve-new" });
-    await dispatch!.dispatchPending(db, config, { fetch: fetcher });
-    // Either no request left the worker, or the route rejected and the row was
-    // quarantined — it must never rebind a retired generation silently.
+    await runOnce(db, config, fetcher);
+    // The retired generation stays closed: its session binding and retiredAt
+    // are untouched. The inbound starts generation 2 instead.
+    const retired = await db.getConversationById(bindingId);
+    expect(retired?.eveSessionId).toBe("eve-old");
+    expect(retired?.retiredAt).toBeTruthy();
+    const generation2 = await db.getConversationById(bindingIdFor(SOURCE_ID, fx.DIRECT_CHAT, 2));
     if (fetcher.mock.calls.length > 0) {
+      // A fresh session bound to generation 2 — the retired generation is
+      // never rebound.
+      expect(generation2?.eveSessionId).toBe("eve-new");
+      expect(generation2?.retiredAt).toBeUndefined();
       const row = await db.getInboxRow({ sourceId: SOURCE_ID, logEpoch: EPOCH, sequence: "6" });
-      expect(["quarantined", "failed"]).toContain(row?.processingState);
+      expect(row?.processingState).toBe("dispatched");
     }
-    expect((await db.getConversationById(bindingId))?.eveSessionId).toBe("eve-old");
   });
 });

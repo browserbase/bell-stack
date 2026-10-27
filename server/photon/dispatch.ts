@@ -20,7 +20,7 @@ import {
 } from "./identity.js";
 import { matchInboundToInteractions } from "./interactions.js";
 import { admitGroup, admitSender, groupActorAuthorized, type ConversationState } from "./policy.js";
-import type { ConversationRow, InboxRow, IntentRow, PhotonStore } from "./store.js";
+import type { ConversationRow, InboxRow, IntentRow, PhotonDb } from "./store.js";
 import { stableJson } from "./normalize.js";
 
 /**
@@ -43,7 +43,7 @@ const dispatchResultSchema = z.object({
 }).strict();
 
 export interface DispatcherDeps {
-  readonly store: PhotonStore;
+  readonly store: PhotonDb;
   readonly config: PhotonConfig;
   readonly sourceId: string;
   readonly logEpoch: string;
@@ -248,6 +248,9 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
         if (row) await store.markInboxProcessing(row, "failed", "delivery exhausted; outcome ambiguous");
       } else {
         await store.updateIntent(intent.intentId, { lastError: outcome.reason });
+        // The failed attempt is recorded on the inbox row too so delivery
+        // telemetry survives between the row's captured and settled states.
+        if (row) await store.markInboxProcessing(row, "captured", outcome.reason);
       }
       return false;
     }
@@ -287,6 +290,9 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
         return true;
       case "retryable":
         await store.updateIntent(intent.intentId, { lastError: result.reason });
+        // The failed attempt is recorded on the inbox row too so delivery
+        // telemetry survives between the row's captured and settled states.
+        if (row) await store.markInboxProcessing(row, "captured", result.reason);
         return false;
     }
   }
@@ -400,56 +406,17 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
 
   /** Chat scopes ("" = no chat) holding any captured dispatchable row. */
   async function pendingChatScopes(): Promise<string[]> {
-    const result = await store.pool.query<{ chat_guid: string | null }>(
-      `SELECT DISTINCT chat_guid FROM bell_photon_inbox
-       WHERE source_id = $1
-         AND disposition IN ('admitted', 'state_only') AND processing_state = 'captured'
-       ORDER BY chat_guid NULLS LAST LIMIT $2`,
-      [sourceId, deps.batchSize],
-    );
-    return result.rows.map((row) => row.chat_guid ?? "");
+    const scopes = await store.dispatchableChatScopes(sourceId, deps.batchSize);
+    return scopes.map((scope) => scope ?? "");
   }
 
   /** Per-chat pending rows of both dispatchable dispositions, in order. */
   async function pendingRowsForChat(chatGuid: string): Promise<InboxRow[]> {
-    const result = chatGuid === ""
-      ? await store.pool.query(
-        `SELECT * FROM bell_photon_inbox
-         WHERE source_id = $1 AND chat_guid IS NULL
-           AND disposition = 'state_only' AND processing_state = 'captured'
-         ORDER BY sequence_num ASC LIMIT $2`,
-        [sourceId, deps.batchSize],
-      )
-      : await store.pool.query(
-        `SELECT * FROM bell_photon_inbox
-         WHERE source_id = $1 AND chat_guid = $2
-           AND disposition IN ('admitted', 'state_only') AND processing_state = 'captured'
-         ORDER BY sequence_num ASC LIMIT $3`,
-        [sourceId, chatGuid, deps.batchSize],
-      );
-    return result.rows.map(mapRow);
+    return store.dispatchableForChat(sourceId, chatGuid === "" ? null : chatGuid, deps.batchSize);
   }
 
   return { runOnce };
 }
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
-function mapRow(row: any): InboxRow {
-  return {
-    sourceId: row.source_id, logEpoch: row.log_epoch, sequence: row.sequence,
-    sequenceNum: String(row.sequence_num), payloadHash: row.payload_hash,
-    envelope: row.envelope ?? undefined, tombstone: row.tombstone,
-    eventFamily: row.event_family ?? undefined, eventType: row.event_type ?? undefined,
-    chatGuid: row.chat_guid ?? undefined, actor: row.actor ?? undefined,
-    targetGuid: row.target_guid ?? undefined, isFromMe: row.is_from_me ?? undefined,
-    occurredAt: row.occurred_at ? new Date(row.occurred_at).toISOString() : undefined,
-    receivedAt: new Date(row.received_at).toISOString(),
-    sourceKind: row.source_kind, disposition: row.disposition,
-    processingState: row.processing_state, attempts: row.attempts,
-    lastError: row.last_error ?? undefined,
-  };
-}
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 /** Retire one due Eve session via the internal route; used by the deadline sweep. */
 export async function retireViaInternalRoute(
@@ -476,4 +443,33 @@ export async function retireViaInternalRoute(
   } catch {
     return "retryable";
   }
+}
+
+/**
+ * Bounded retirement sweep: every due deadline goes through the private
+ * retire route (never a bare cancellation), then the deadline and its
+ * binding are marked retired. Retryable route outcomes leave the deadline
+ * open for the next sweep.
+ */
+export async function retireDueSessions(
+  db: PhotonDb,
+  config: PhotonConfig,
+  options?: { fetch?: typeof fetch; now?: () => Date; batchSize?: number },
+): Promise<{ retired: number; retried: number }> {
+  const fetcher = options?.fetch ?? fetch;
+  const now = options?.now ?? (() => new Date());
+  const batchSize = options?.batchSize ?? 64;
+  let retired = 0;
+  let retried = 0;
+  for (const deadline of await db.dueDeadlines(now(), batchSize)) {
+    const result = await retireViaInternalRoute(config, deadline.eveSessionId, "absolute_deadline", fetcher);
+    if (result === "retryable") {
+      retried++;
+      continue;
+    }
+    await db.markDeadlineRetired(deadline.eveSessionId, "absolute_deadline");
+    if (deadline.bindingId) await db.retireConversation(deadline.bindingId);
+    retired++;
+  }
+  return { retired, retried };
 }

@@ -9,7 +9,7 @@ import type {
   PhotonCommandOp,
   PhotonCommandExecutor,
 } from "../contracts.js";
-import type { PhotonStore } from "../store.js";
+import type { PhotonDb } from "../store.js";
 import { resolveMiniAppSession } from "./interactions.js";
 import {
   CommandValidationError,
@@ -32,7 +32,7 @@ function messageReceipt(message: Message | undefined): Record<string, unknown> |
   return message ? { messageGuid: message.guid, chatGuids: [...message.chatGuids] } : undefined;
 }
 
-async function persistSentMessage(store: PhotonStore, sourceId: string, message: Message): Promise<void> {
+async function persistSentMessage(store: PhotonDb, sourceId: string, message: Message): Promise<void> {
   await store.upsertResource(sourceId, "message", message.guid, {
     chatGuids: [...message.chatGuids],
     sentByBell: true,
@@ -94,7 +94,7 @@ function miniAppMessage(input: {
 }
 
 async function persistMiniAppSession(
-  store: PhotonStore,
+  store: PhotonDb,
   sourceId: string,
   session: MiniAppCardSession,
 ): Promise<void> {
@@ -104,7 +104,7 @@ async function persistMiniAppSession(
 }
 
 export function messageExecutors(
-  store: PhotonStore,
+  store: PhotonDb,
 ): Partial<Record<PhotonCommandOp, PhotonCommandExecutor>> {
   return {
     "messages.sendText": executeOp("messages.sendText", async (client, args, command) => {

@@ -1,12 +1,16 @@
+import { createHash } from "node:crypto";
+
 import type {
   AdvancedIMessage,
   AttachmentInfo,
+  AttachmentInput,
+  CompanionInfo,
+  DownloadAttachmentChunk,
   Message,
   UploadAttachmentResult,
 } from "@photon-ai/advanced-imessage/grpc";
 
-import { sha256Hex } from "./identity.js";
-import type { PhotonStore } from "./store.js";
+import type { PhotonDb } from "./store.js";
 
 /**
  * Scoped artifact IO: bounded attachment downloads, validated uploads with
@@ -79,7 +83,7 @@ export interface DownloadedArtifact {
  */
 export async function downloadArtifact(
   client: AdvancedIMessage,
-  store: PhotonStore,
+  store: PhotonDb,
   sourceId: string,
   chatGuid: string,
   attachmentGuid: string,
@@ -104,7 +108,7 @@ export async function downloadArtifact(
  */
 export async function downloadArtifactData(
   client: AdvancedIMessage,
-  store: PhotonStore,
+  store: PhotonDb,
   sourceId: string,
   chatGuid: string,
   attachmentGuid: string,
@@ -126,19 +130,37 @@ interface DownloadResult extends DownloadedArtifact {
   readonly data: Uint8Array;
 }
 
-async function downloadOnce(
-  client: AdvancedIMessage,
-  store: PhotonStore,
-  sourceId: string,
-  chatGuid: string,
-  attachmentGuid: string,
-  maxBytes: number,
-): Promise<DownloadResult> {
-  const stream = client.attachments.downloadStream(attachmentGuid);
+/** Raw-bytes digest so caller-supplied checksums match byte-for-byte. */
+function sha256Bytes(data: Uint8Array): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+export interface CollectedDownload {
+  readonly info: AttachmentInfo;
+  readonly companionInfo?: CompanionInfo;
+  readonly primary: Uint8Array;
+  readonly companion?: Uint8Array;
+  readonly sha256: string;
+}
+
+/**
+ * Pure bounded stream collector: the header frame carries metadata, primary
+ * and companion chunks accumulate separately, and the declared header size
+ * plus every accumulated byte fail closed past their budgets. Only a fully
+ * consumed stream yields bytes — an interrupted one throws rather than
+ * returning a truncated payload. When `expectedSha256` is supplied the
+ * collected primary must match it exactly.
+ */
+export async function collectDownload(
+  stream: AsyncIterable<DownloadAttachmentChunk> & { close?: () => Promise<void> },
+  options: { maxBytes: number; maxCompanionBytes?: number; expectedSha256?: string },
+): Promise<CollectedDownload> {
+  const maxBytes = options.maxBytes;
+  const maxCompanionBytes = options.maxCompanionBytes ?? maxBytes;
   let info: AttachmentInfo | undefined;
-  let companionInfo: { fileName: string; mimeType: string; totalBytes: number } | undefined;
-  const primary: Buffer[] = [];
-  const companion: Buffer[] = [];
+  let companionInfo: CompanionInfo | undefined;
+  const primaryChunks: Buffer[] = [];
+  const companionChunks: Buffer[] = [];
   let primaryBytes = 0;
   let companionBytes = 0;
   try {
@@ -147,42 +169,65 @@ async function downloadOnce(
         if (info) throw new MediaError("download_protocol_error", "Duplicate download header frame.");
         info = chunk.info;
         companionInfo = chunk.companionInfo;
+        if (info.totalBytes > maxBytes)
+          throw new MediaError("attachment_too_large", `Attachment declares ${info.totalBytes} bytes, over the ${maxBytes} byte bound.`);
+        if (companionInfo && companionInfo.totalBytes > maxCompanionBytes)
+          throw new MediaError("companion_too_large", `Companion declares ${companionInfo.totalBytes} bytes, over the ${maxCompanionBytes} byte bound.`);
       } else if (chunk.type === "primaryChunk") {
         primaryBytes += chunk.data.byteLength;
         if (primaryBytes > maxBytes)
-          throw new MediaError("attachment_too_large", `Attachment ${attachmentGuid} exceeds the ${maxBytes} byte bound.`);
-        primary.push(Buffer.from(chunk.data));
+          throw new MediaError("attachment_too_large", `Attachment exceeds the ${maxBytes} byte bound.`);
+        primaryChunks.push(Buffer.from(chunk.data));
       } else if (chunk.type === "companionChunk") {
         companionBytes += chunk.data.byteLength;
-        if (companionBytes > maxBytes)
-          throw new MediaError("companion_too_large", `Attachment companion ${attachmentGuid} exceeds the ${maxBytes} byte bound.`);
-        companion.push(Buffer.from(chunk.data));
+        if (companionBytes > maxCompanionBytes)
+          throw new MediaError("companion_too_large", `Attachment companion exceeds the ${maxCompanionBytes} byte bound.`);
+        companionChunks.push(Buffer.from(chunk.data));
       }
     }
   } catch (error) {
-    await stream.close().catch(() => undefined);
+    await stream.close?.().catch(() => undefined);
     if (error instanceof MediaError) throw error;
     throw new MediaError(
       "download_interrupted",
-      `Attachment ${attachmentGuid} download was interrupted: ${error instanceof Error ? error.message : String(error)}`,
+      `Attachment download was interrupted: ${error instanceof Error ? error.message : String(error)}`,
       true,
     );
   }
   if (!info)
     throw new MediaError("download_protocol_error", "Download stream ended before its header frame.", true);
 
-  const data = Buffer.concat(primary);
-  const sha256 = sha256Hex(data.toString("base64"));
+  const primary = new Uint8Array(Buffer.concat(primaryChunks));
+  const sha256 = sha256Bytes(primary);
+  if (options.expectedSha256 !== undefined && sha256 !== options.expectedSha256)
+    throw new MediaError("checksum_mismatch", "Attachment sha256 does not match the expected checksum.");
+  const companion = companionChunks.length > 0
+    ? new Uint8Array(Buffer.concat(companionChunks))
+    : undefined;
+  return { info, companionInfo, primary, companion, sha256 };
+}
+
+async function downloadOnce(
+  client: AdvancedIMessage,
+  store: PhotonDb,
+  sourceId: string,
+  chatGuid: string,
+  attachmentGuid: string,
+  maxBytes: number,
+): Promise<DownloadResult> {
+  const collected = await collectDownload(client.attachments.downloadStream(attachmentGuid), { maxBytes });
+  const { info, companionInfo, primary: data, sha256 } = collected;
+
   const artifactId = await store.putArtifact({
     sourceId, chatGuid, attachmentGuid,
     fileName: info.fileName, mediaType: info.mimeType, data,
   });
   let companionArtifactId: string | undefined;
-  if (companion.length > 0) {
+  if (collected.companion) {
     companionArtifactId = await store.putArtifact({
       sourceId, chatGuid, attachmentGuid,
       fileName: companionInfo?.fileName, mediaType: companionInfo?.mimeType ?? "video/quicktime",
-      data: Buffer.concat(companion),
+      data: Buffer.from(collected.companion),
     });
   }
   await store.upsertResource(sourceId, "attachment", attachmentGuid, {
@@ -200,13 +245,45 @@ export interface UploadedArtifact {
 }
 
 /**
+ * Provider-supplied filenames are metadata, not paths: separators, relative
+ * segments and control bytes are stripped before one ever reaches a disk
+ * path or log line. Bounded to the upload schema's 1024-char limit.
+ */
+export function sanitizeFileName(name: string): string {
+  const base = name.split(/[/\\]/).pop() ?? name;
+  const cleaned = base
+    .replace(/\.{2,}/g, "_")
+    .replace(/[\x00-\x1f\x7f]/g, "")
+    .trim()
+    .slice(0, 1024);
+  return cleaned.length > 0 ? cleaned : "attachment";
+}
+
+/**
+ * Maps artifact bytes to the provider upload shape. A Live Photo companion
+ * (video/*) pairs with its primary (image/*); only the primary GUID is ever
+ * sent in a message.
+ */
+export function buildUploadInput(input: {
+  fileName: string;
+  data: Uint8Array;
+  companion?: Uint8Array;
+}): AttachmentInput {
+  return {
+    fileName: input.fileName,
+    data: input.data,
+    companion: input.companion !== undefined ? { data: input.companion } : undefined,
+  };
+}
+
+/**
  * Reads validated artifact bytes and uploads them through the provider.
  * A companion artifact pairs a Live Photo still (image/*) with its motion
  * video (video/*); only the primary GUID is sent later.
  */
 export async function uploadArtifact(
   client: AdvancedIMessage,
-  store: PhotonStore,
+  store: PhotonDb,
   sourceId: string,
   args: { artifactId: string; companionArtifactId?: string; fileName: string },
 ): Promise<UploadedArtifact> {
@@ -232,11 +309,13 @@ export async function uploadArtifact(
   if (totalBytes > MAX_UPLOAD_FRAME_BYTES)
     throw new MediaError("upload_too_large", `Combined upload of ${totalBytes} bytes exceeds the unary upload bound.`);
 
-  const result: UploadAttachmentResult = await client.attachments.upload({
-    fileName: args.fileName,
-    data: Buffer.from(primary.data),
-    companion: companionInput,
-  });
+  const result: UploadAttachmentResult = await client.attachments.upload(
+    buildUploadInput({
+      fileName: args.fileName,
+      data: primary.data,
+      companion: companionInput?.data,
+    }),
+  );
   const uploaded: UploadedArtifact = {
     attachmentGuid: result.attachment.guid,
     transferState: result.attachment.transferState,
@@ -281,7 +360,7 @@ function modelConsumable(mediaType: string): boolean {
  */
 export async function messageToFileParts(
   client: AdvancedIMessage,
-  store: PhotonStore,
+  store: PhotonDb,
   sourceId: string,
   message: Message,
   maxBytes: number,

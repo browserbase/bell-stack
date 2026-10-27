@@ -2,27 +2,15 @@
  * Bounded media handling: download streams are collected into separate
  * bounded primary/companion outputs, oversized or corrupted payloads fail
  * closed (never a partial artifact), and Live Photo pairs stay matched.
- * `server/photon/media.ts` is a parallel workstream module — describes skip
- * while it is absent.
  */
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
-import type { AttachmentInfo, AttachmentInput, DownloadAttachmentChunk } from "@photon-ai/advanced-imessage/grpc";
+import type { AttachmentInfo, DownloadAttachmentChunk } from "@photon-ai/advanced-imessage/grpc";
 
-import { fakeStream, optionalModule } from "./fixtures/harness";
+import { buildUploadInput, collectDownload, sanitizeFileName } from "../../server/photon/media";
+import { fakeStream } from "./fixtures/harness";
 import { attachment } from "./fixtures/sdk-events";
-
-interface MediaModule {
-  collectDownload(
-    stream: AsyncIterable<DownloadAttachmentChunk>,
-    options: { maxBytes: number; expectedSha256?: string; maxCompanionBytes?: number },
-  ): Promise<{ info: AttachmentInfo; primary: Uint8Array; companion?: Uint8Array }>;
-  buildUploadInput(input: { fileName: string; data: Uint8Array; companion?: Uint8Array }): AttachmentInput;
-  sanitizeFileName?(name: string): string;
-}
-
-const media = await optionalModule<MediaModule>("../../../server/photon/media.ts");
 
 function chunks(info: AttachmentInfo, primary: readonly Uint8Array[], companion: readonly Uint8Array[] = [], companionInfo?: AttachmentInfo extends never ? never : { fileName: string; kind: "live-photo-video"; mimeType: string; totalBytes: number }): DownloadAttachmentChunk[] {
   const out: DownloadAttachmentChunk[] = [{ type: "header", info, ...(companionInfo ? { companionInfo } : {}) }];
@@ -41,8 +29,8 @@ function sha256(data: Uint8Array): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
-describe.skipIf(!media)("bounded media pipeline (server/photon/media.ts)", () => {
-  const m = media!;
+describe("bounded media pipeline (server/photon/media.ts)", () => {
+  const m = { collectDownload, buildUploadInput, sanitizeFileName };
 
   it("collects a well-formed download into bounded primary bytes", async () => {
     const primary = bytes(1024);
@@ -68,7 +56,7 @@ describe.skipIf(!media)("bounded media pipeline (server/photon/media.ts)", () =>
 
   it("verifies a sha256 checksum when one is supplied", async () => {
     const primary = bytes(2048);
-    const info = attachment();
+    const info = attachment({ totalBytes: primary.byteLength });
     const good = await m.collectDownload(
       fakeStream(chunks(info, [primary])),
       { maxBytes: 4096, expectedSha256: sha256(primary) },
@@ -83,7 +71,7 @@ describe.skipIf(!media)("bounded media pipeline (server/photon/media.ts)", () =>
   it("keeps a Live Photo primary and companion paired in separate outputs", async () => {
     const primary = bytes(1500, 0x62);
     const companion = bytes(900, 0x63);
-    const info = attachment({ fileName: "live.heic", mimeType: "image/heic" });
+    const info = attachment({ fileName: "live.heic", mimeType: "image/heic", totalBytes: primary.byteLength });
     const companionInfo = { fileName: "live.mov", kind: "live-photo-video" as const, mimeType: "video/quicktime", totalBytes: companion.byteLength };
     const result = await m.collectDownload(
       fakeStream(chunks(info, [primary], [companion.slice(0, 400), companion.slice(400)], companionInfo)),
@@ -112,7 +100,7 @@ describe.skipIf(!media)("bounded media pipeline (server/photon/media.ts)", () =>
   });
 
   it("preserves MIME type and filename through the attachment metadata", async () => {
-    const info = attachment({ fileName: "résumé 2026.pdf", mimeType: "application/pdf", uti: "com.adobe.pdf" });
+    const info = attachment({ fileName: "résumé 2026.pdf", mimeType: "application/pdf", uti: "com.adobe.pdf", totalBytes: 10 });
     const result = await m.collectDownload(fakeStream(chunks(info, [bytes(10)])), { maxBytes: 1024 });
     expect(result.info.mimeType).toBe("application/pdf");
     expect(result.info.fileName).toBe("résumé 2026.pdf");

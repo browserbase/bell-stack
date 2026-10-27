@@ -1,7 +1,7 @@
 import type { MiniAppCardSession, Poll } from "@photon-ai/advanced-imessage/grpc";
 
 import type { PhotonCommandExecutor, PhotonCommandOp } from "../contracts.js";
-import type { PhotonStore } from "../store.js";
+import type { PhotonDb } from "../store.js";
 import { CommandValidationError, commandProviderKey, executeOp } from "./shared.js";
 
 /**
@@ -11,7 +11,7 @@ import { CommandValidationError, commandProviderKey, executeOp } from "./shared.
  * identifiers, matching the provider's own model.
  */
 
-function persistPoll(store: PhotonStore, sourceId: string, poll: Poll): Promise<void> {
+function persistPoll(store: PhotonDb, sourceId: string, poll: Poll): Promise<void> {
   return store.upsertResource(sourceId, "poll", poll.pollMessageGuid, { poll });
 }
 
@@ -22,7 +22,7 @@ function persistPoll(store: PhotonStore, sourceId: string, poll: Poll): Promise<
  * command's authorized chat scope.
  */
 export async function resolveMiniAppSession(
-  store: PhotonStore,
+  store: PhotonDb,
   sourceId: string,
   provided: MiniAppCardSession,
   chatGuid: string,
@@ -44,7 +44,7 @@ export async function resolveMiniAppSession(
 }
 
 export function interactionExecutors(
-  store: PhotonStore,
+  store: PhotonDb,
 ): Partial<Record<PhotonCommandOp, PhotonCommandExecutor>> {
   return {
     "polls.create": executeOp("polls.create", async (client, args, command) => {

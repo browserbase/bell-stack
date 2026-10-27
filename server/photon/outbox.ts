@@ -15,7 +15,7 @@ import { interactionExecutors } from "./commands/interactions.js";
 import { locationExecutors, type LocationWatchControl } from "./commands/locations.js";
 import { mediaExecutors } from "./commands/media.js";
 import { messageExecutors } from "./commands/messages.js";
-import type { CommandRow, PhotonStore } from "./store.js";
+import type { CommandRow, PhotonDb } from "./store.js";
 
 /**
  * The durable command outbox. Claims with the store's fencing primitives,
@@ -30,7 +30,7 @@ const DEPENDENCY_WAIT_MS = 2_000;
 const FOREIGN_RELEASE_MS = 5_000;
 
 export interface OutboxDeps {
-  readonly store: PhotonStore;
+  readonly store: PhotonDb;
   readonly workerId: string;
   /** Commands belonging to other sources are released unclaimed. */
   readonly sourceId: string;
@@ -39,6 +39,8 @@ export interface OutboxDeps {
   readonly claimMs: number;
   readonly batchSize: number;
   readonly maxAttempts?: number;
+  /** Per-operation executors merged over the built-in registry (tests). */
+  readonly executors?: Partial<Record<PhotonCommandOp, PhotonCommandExecutor>>;
   readonly log?: (entry: Record<string, unknown>) => void;
   readonly now?: () => Date;
 }
@@ -83,6 +85,7 @@ export function createOutbox(deps: OutboxDeps): PhotonOutbox {
     ...conversationExecutors(store),
     ...interactionExecutors(store),
     ...locationExecutors(deps.watchControl),
+    ...deps.executors,
   };
 
   /** Settles the claimed row with the execution's one terminal outcome. */

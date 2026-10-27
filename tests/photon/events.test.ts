@@ -8,15 +8,15 @@
  */
 import { describe, expect, it } from "vitest";
 
-import type { LiveEvent, SharedFriendLocationUpdated } from "@photon-ai/advanced-imessage/grpc";
+import type { CatchUpEvent, LiveEvent, SharedFriendLocationUpdated } from "@photon-ai/advanced-imessage/grpc";
 
 import type { PhotonEventEnvelope } from "../../server/photon/contracts";
+import { normalizeLiveEvent } from "../../server/photon/normalize";
 import { admitEvent } from "../../server/photon/policy";
 
 import {
   envelope,
   groupConfig,
-  optionalModule,
   payloadHashFor,
   testConfig,
 } from "./fixtures/harness";
@@ -27,15 +27,15 @@ import { handleKey } from "../../server/photon/identity";
 /* normalizeLiveEvent — transport workstream module                    */
 /* ------------------------------------------------------------------ */
 
-interface NormalizeModule {
-  normalizeLiveEvent(event: LiveEvent, receivedAt?: string): PhotonEventEnvelope | null;
-  normalizeLocationUpdate?(update: SharedFriendLocationUpdated, receivedAt?: string): PhotonEventEnvelope | null;
-}
+/** Test-facing adapter: live-source normalization with a default receivedAt. */
+const n = {
+  normalizeLiveEvent: (
+    event: LiveEvent | CatchUpEvent | SharedFriendLocationUpdated,
+    receivedAt = "2026-10-27T12:00:01.000Z",
+  ): PhotonEventEnvelope | null => normalizeLiveEvent(event, "live", receivedAt),
+};
 
-const normalize = await optionalModule<NormalizeModule>("../../../server/photon/normalize.ts");
-
-describe.skipIf(!normalize)("normalizeLiveEvent (server/photon/normalize.ts)", () => {
-  const n = normalize!;
+describe("normalizeLiveEvent (server/photon/normalize.ts)", () => {
 
   it("maps common envelope context: sequence string, chatGuid, isFromMe, occurredAt", () => {
     const raw = fx.messageReceived({ chatGuid: fx.DIRECT_CHAT });
@@ -167,12 +167,12 @@ describe.skipIf(!normalize)("normalizeLiveEvent (server/photon/normalize.ts)", (
   });
 
   it("maps location updates and the catchup.complete marker", () => {
-    if (n.normalizeLocationUpdate) {
-      const out = n.normalizeLocationUpdate(fx.locationUpdated());
-      expect(out?.event.family).toBe("location");
-      expect(out?.event.type).toBe("updated");
-      expect(out?.sequence).toBe(String(fx.locationUpdated().sourceSequence));
-    }
+    const out = n.normalizeLiveEvent(fx.locationUpdated());
+    expect(out?.event.family).toBe("location");
+    if (out?.event.family === "location") expect(out.event.type).toBe("updated");
+    // Location watch sequences live in their own namespace — they can never
+    // collide with durable-log inbox sequences.
+    expect(out?.sequence).toBe(`loc:${fx.locationUpdated().sourceSequence}`);
     const done = n.normalizeLiveEvent(fx.catchupComplete(42) as unknown as LiveEvent);
     if (done !== null) {
       expect(done.event.family).toBe("catchup");

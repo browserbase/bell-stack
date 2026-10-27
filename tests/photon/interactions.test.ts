@@ -9,9 +9,9 @@ import { describe, expect, it } from "vitest";
 
 import type { PhotonEventEnvelope } from "../../server/photon/contracts";
 import { sourceIdFor } from "../../server/photon/identity";
-import type { InteractionRow, PhotonDb } from "../../server/photon/store";
+import { matchInboundToInteractions } from "../../server/photon/interactions";
 
-import { envelope, inMemoryDb, optionalModule } from "./fixtures/harness";
+import { envelope, inMemoryDb } from "./fixtures/harness";
 import * as fx from "./fixtures/sdk-events";
 
 const SOURCE_ID = sourceIdFor("test-project-0001", "inst-aaaa-bbbb", fx.RECEIVING_LINE);
@@ -103,98 +103,78 @@ describe("pending interaction ledger", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* Event-to-interaction matching — parallel workstream module          */
+/* Event-to-interaction matching — transport workstream module         */
 /* ------------------------------------------------------------------ */
 
-interface InteractionsModule {
-  matchInteraction(
-    open: readonly InteractionRow[],
-    probe: { kind?: InteractionRow["kind"]; targetMessageGuid?: string; pollMessageGuid?: string; actor?: string },
-  ): InteractionRow | undefined;
-  resolveForEvent?(
-    db: PhotonDb,
-    env: PhotonEventEnvelope,
-    options?: { actor?: string },
-  ): Promise<"resolved" | "state_only" | "none">;
-}
+describe("interaction matching (server/photon/interactions.ts)", () => {
+  async function seedReactionContract(overrides: Record<string, unknown> = {}) {
+    const db = await seededDb();
+    const interactionId = await db.createInteraction({
+      sourceId: SOURCE_ID, chatGuid: fx.DIRECT_CHAT, kind: "reaction_contract",
+      requestRef: "req-1", target: { messageGuid: "msg-1" },
+      responseMapping: { reactions: ["love"] },
+      ...overrides,
+    });
+    return { db, interactionId };
+  }
 
-const interactions = await optionalModule<InteractionsModule>("../../../server/photon/interactions.ts");
-
-function openRow(overrides: Partial<InteractionRow> = {}): InteractionRow {
-  return {
-    interactionId: "int:1",
-    sourceId: SOURCE_ID,
-    chatGuid: fx.DIRECT_CHAT,
-    generation: 1,
-    kind: "reaction_contract",
-    requestRef: "req-1",
-    target: { messageGuid: "msg-1" },
-    responseMapping: { love: "approve" },
-    status: "pending",
-    expiresAt: new Date(Date.now() + 60_000),
-    createdAt: new Date(),
-    ...overrides,
-  };
-}
-
-describe.skipIf(!interactions)("interaction matching (server/photon/interactions.ts)", () => {
-  const m = interactions!;
-
-  it("matches by kind, target and permitted actor", () => {
-    const rows = [openRow()];
-    expect(m.matchInteraction(rows, { kind: "reaction_contract", targetMessageGuid: "msg-1", actor: ACTOR })).toBe(rows[0]);
+  it("matches by kind, target and permitted actor", async () => {
+    const { db, interactionId } = await seedReactionContract({ permittedActor: ACTOR });
+    const match = await matchInboundToInteractions(db, SOURCE_ID, reactionEnvelope(ACTOR));
+    expect(match.resolved.map((row) => row.interactionId)).toEqual([interactionId]);
+    expect(match.contractResolved).toBe(true);
   });
 
-  it("refuses a different actor — arbitrary emoji never authorizes an action", () => {
-    const rows = [openRow({ permittedActor: ACTOR })];
-    expect(m.matchInteraction(rows, { kind: "reaction_contract", targetMessageGuid: "msg-1", actor: STRANGER })).toBeUndefined();
+  it("refuses a different actor — arbitrary emoji never authorizes an action", async () => {
+    const { db } = await seedReactionContract({ permittedActor: ACTOR });
+    const match = await matchInboundToInteractions(db, SOURCE_ID, reactionEnvelope(STRANGER));
+    expect(match.resolved).toHaveLength(0);
+    expect(await db.openInteractions(SOURCE_ID, fx.DIRECT_CHAT)).toHaveLength(1);
     // An unrestricted interaction may still resolve for any verified actor.
-    const open = [openRow({ permittedActor: undefined })];
-    const match = m.matchInteraction(open, { kind: "reaction_contract", targetMessageGuid: "msg-1", actor: STRANGER });
-    if (match !== undefined) expect(match).toBe(open[0]);
+    const open = await seededDb();
+    await open.createInteraction({
+      sourceId: SOURCE_ID, chatGuid: fx.DIRECT_CHAT, kind: "reaction_contract",
+      requestRef: "req-open", target: { messageGuid: "msg-1" },
+    });
+    const unrestricted = await matchInboundToInteractions(open, SOURCE_ID, reactionEnvelope(STRANGER));
+    expect(unrestricted.resolved).toHaveLength(1);
   });
 
-  it("never resolves on the wrong target or kind", () => {
-    const rows = [openRow()];
-    expect(m.matchInteraction(rows, { kind: "reaction_contract", targetMessageGuid: "msg-2", actor: ACTOR })).toBeUndefined();
-    expect(m.matchInteraction(rows, { kind: "poll", targetMessageGuid: "msg-1", actor: ACTOR })).toBeUndefined();
+  it("never resolves on the wrong target or kind", async () => {
+    const { db } = await seedReactionContract({ permittedActor: ACTOR });
+    // Wrong target message.
+    expect((await matchInboundToInteractions(db, SOURCE_ID, reactionEnvelope(ACTOR, "msg-2"))).resolved).toHaveLength(0);
+    // Wrong event kind: a poll contract never resolves on a reaction.
+    const polls = await seededDb();
+    await polls.createInteraction({
+      sourceId: SOURCE_ID, chatGuid: fx.DIRECT_CHAT, kind: "poll",
+      requestRef: "req-poll", permittedActor: ACTOR, target: { pollMessageGuid: fx.POLL_GUID },
+    });
+    expect((await matchInboundToInteractions(polls, SOURCE_ID, reactionEnvelope(ACTOR))).resolved).toHaveLength(0);
+    expect(await db.openInteractions(SOURCE_ID, fx.DIRECT_CHAT)).toHaveLength(1);
   });
 
   it("missing actor means state-only: a replayed or unattributed vote cannot resolve", async () => {
-    if (!m.resolveForEvent) return;
-    const db = await seededDb();
-    await db.createInteraction({
-      sourceId: SOURCE_ID, chatGuid: fx.DIRECT_CHAT, kind: "reaction_contract",
-      requestRef: "req-1", permittedActor: ACTOR, target: { messageGuid: "msg-1" },
-    });
-    const outcome = await m.resolveForEvent(db, reactionEnvelope(undefined), {});
-    expect(outcome).not.toBe("resolved");
+    const { db } = await seedReactionContract({ permittedActor: ACTOR });
+    const match = await matchInboundToInteractions(db, SOURCE_ID, reactionEnvelope(undefined));
+    expect(match.contractResolved).toBe(false);
     expect(await db.openInteractions(SOURCE_ID, fx.DIRECT_CHAT)).toHaveLength(1);
   });
 
   it("an expired contract cannot resolve even for the right actor", async () => {
-    if (!m.resolveForEvent) return;
-    const db = await seededDb();
-    await db.createInteraction({
-      sourceId: SOURCE_ID, chatGuid: fx.DIRECT_CHAT, kind: "reaction_contract",
-      requestRef: "req-1", permittedActor: ACTOR, target: { messageGuid: "msg-1" },
-      expiresAt: new Date(Date.now() - 1_000),
+    const { db } = await seedReactionContract({
+      permittedActor: ACTOR, expiresAt: new Date(Date.now() - 1_000),
     });
-    const outcome = await m.resolveForEvent(db, reactionEnvelope(ACTOR), { actor: ACTOR });
-    expect(outcome).not.toBe("resolved");
+    const match = await matchInboundToInteractions(db, SOURCE_ID, reactionEnvelope(ACTOR));
+    expect(match.resolved).toHaveLength(0);
   });
 
   it("a replayed vote resolves at most once", async () => {
-    if (!m.resolveForEvent) return;
-    const db = await seededDb();
-    await db.createInteraction({
-      sourceId: SOURCE_ID, chatGuid: fx.DIRECT_CHAT, kind: "reaction_contract",
-      requestRef: "req-1", permittedActor: ACTOR, target: { messageGuid: "msg-1" },
-    });
-    const first = await m.resolveForEvent(db, reactionEnvelope(ACTOR), { actor: ACTOR });
-    const second = await m.resolveForEvent(db, reactionEnvelope(ACTOR), { actor: ACTOR });
-    expect(first).toBe("resolved");
-    expect(second).not.toBe("resolved");
+    const { db } = await seedReactionContract({ permittedActor: ACTOR });
+    const first = await matchInboundToInteractions(db, SOURCE_ID, reactionEnvelope(ACTOR));
+    const second = await matchInboundToInteractions(db, SOURCE_ID, reactionEnvelope(ACTOR));
+    expect(first.contractResolved).toBe(true);
+    expect(second.contractResolved).toBe(false);
     expect(await db.openInteractions(SOURCE_ID, fx.DIRECT_CHAT)).toHaveLength(0);
   });
 });

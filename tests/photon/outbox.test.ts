@@ -1,9 +1,7 @@
 /**
  * Durable outbound commands: claim → execute → settle. The command ledger
- * (enqueue dedup, claim fencing, completion states) runs against the frozen
- * store now; the worker's per-method retry/ambiguity policy lives in the
- * parallel outbox workstream and skips while `server/photon/outbox.ts` is
- * absent.
+ * (enqueue dedup, claim fencing, completion states) and the outbox state
+ * machine both run against the in-memory PhotonDb seam.
  */
 import { describe, expect, it } from "vitest";
 
@@ -16,9 +14,10 @@ import {
   type PhotonCommandOp,
 } from "../../server/photon/contracts";
 import { providerKeyFor, semanticKeyFor, sourceIdFor } from "../../server/photon/identity";
+import { createOutbox } from "../../server/photon/outbox";
 import type { PhotonDb } from "../../server/photon/store";
 
-import { inMemoryDb, optionalModule } from "./fixtures/harness";
+import { inMemoryDb } from "./fixtures/harness";
 import * as fx from "./fixtures/sdk-events";
 
 const SOURCE_ID = sourceIdFor("test-project-0001", "inst-aaaa-bbbb", fx.RECEIVING_LINE);
@@ -117,24 +116,8 @@ describe("command ledger", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* Outbox executor — parallel workstream module                        */
+/* Outbox executor — transport workstream module                       */
 /* ------------------------------------------------------------------ */
-
-interface OutboxModule {
-  processCommands(
-    db: PhotonDb,
-    executor: PhotonCommandExecutor,
-    options?: {
-      workerId?: string;
-      batchSize?: number;
-      claimMs?: number;
-      now?: () => Date;
-      deps?: Partial<PhotonCommandDeps>;
-    },
-  ): Promise<{ claimed: number; acknowledged: number; ambiguous: number; failed: number; retried: number; expired: number }>;
-}
-
-const outbox = await optionalModule<OutboxModule>("../../../server/photon/outbox.ts");
 
 const deps: PhotonCommandDeps = {
   client: { sendText: async () => ({ guid: "m" }), raw: {} },
@@ -146,11 +129,28 @@ const deps: PhotonCommandDeps = {
   now: () => new Date("2026-10-27T12:00:00Z"),
 };
 
-describe.skipIf(!outbox)("command execution state machine (server/photon/outbox.ts)", () => {
+const NOOP_WATCHES = { setLocationWatch: async () => true };
+
+describe("command execution state machine (server/photon/outbox.ts)", () => {
   async function enqueue(db: PhotonDb, overrides: Partial<PhotonCommand> & { operation: PhotonCommandOp }) {
     const cmd = command(overrides);
     await db.enqueueCommand(cmd);
     return cmd;
+  }
+
+  /** One outbox tick with the probe executor injected for the given ops. */
+  async function runOnce(
+    db: PhotonDb,
+    executor: PhotonCommandExecutor,
+    ops: readonly PhotonCommandOp[],
+  ): Promise<number> {
+    const executors: Partial<Record<PhotonCommandOp, PhotonCommandExecutor>> = {};
+    for (const op of ops) executors[op] = executor;
+    return createOutbox({
+      store: db, workerId: "w-1", sourceId: SOURCE_ID,
+      commandDeps: deps, watchControl: NOOP_WATCHES,
+      claimMs: 60_000, batchSize: 10, executors,
+    }).runOnce();
   }
 
   it("acknowledges a successful keyed send with the provider receipt", async () => {
@@ -160,7 +160,7 @@ describe.skipIf(!outbox)("command execution state machine (server/photon/outbox.
       expect(claimed.providerKey).toBe(providerKeyFor(cmd.commandId, 0));
       return { kind: "acknowledged", result: { guid: "msg-9" }, providerReceipt: { ok: true } };
     };
-    await outbox!.processCommands(db, executor, { deps });
+    await runOnce(db, executor, ["messages.sendText"]);
     const row = await db.getCommand("send-1");
     expect(row?.status).toBe("acknowledged");
     expect(row?.providerReceipt).toEqual({ ok: true });
@@ -170,7 +170,7 @@ describe.skipIf(!outbox)("command execution state machine (server/photon/outbox.
     const db = await seededDb();
     await enqueue(db, { commandId: "r-1", operation: "messages.sendText" });
     const executor: PhotonCommandExecutor = async () => ({ kind: "retryable", errorCode: "serviceUnavailable", retryAfterMs: 5_000 });
-    await outbox!.processCommands(db, executor, { deps });
+    await runOnce(db, executor, ["messages.sendText"]);
     const row = await db.getCommand("r-1");
     expect(row?.status).toBe("queued");
     expect(row?.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
@@ -183,14 +183,14 @@ describe.skipIf(!outbox)("command execution state machine (server/photon/outbox.
     // provider may have applied it.
     await enqueue(db, { commandId: "mr-1", operation: "chats.markRead" });
     const executor: PhotonCommandExecutor = async () => ({ kind: "ambiguous", reason: "response lost after acceptance" });
-    await outbox!.processCommands(db, executor, { deps });
+    await runOnce(db, executor, ["chats.markRead"]);
     const row = await db.getCommand("mr-1");
     expect(row?.status).toBe("ambiguous");
     // A later tick must NOT re-execute an ambiguous command blindly.
-    const executor2 = { calls: 0 } as { calls: number };
-    const second: PhotonCommandExecutor = async () => { executor2.calls++; return { kind: "acknowledged" }; };
-    await outbox!.processCommands(db, second, { deps });
-    expect(executor2.calls).toBe(0);
+    let calls = 0;
+    const second: PhotonCommandExecutor = async () => { calls++; return { kind: "acknowledged" }; };
+    await runOnce(db, second, ["chats.markRead"]);
+    expect(calls).toBe(0);
     expect((await db.getCommand("mr-1"))?.status).toBe("ambiguous");
   });
 
@@ -199,7 +199,7 @@ describe.skipIf(!outbox)("command execution state machine (server/photon/outbox.
     await enqueue(db, { commandId: "read-1", operation: "messages.get" });
     expect(READ_OPERATIONS.has("messages.get")).toBe(true);
     const executor: PhotonCommandExecutor = async () => ({ kind: "retryable", errorCode: "timeout" });
-    await outbox!.processCommands(db, executor, { deps });
+    await runOnce(db, executor, ["messages.get"]);
     expect((await db.getCommand("read-1"))?.status).toBe("queued");
   });
 
@@ -207,7 +207,7 @@ describe.skipIf(!outbox)("command execution state machine (server/photon/outbox.
     const db = await seededDb();
     await enqueue(db, { commandId: "f-1", operation: "groups.leave" });
     const executor: PhotonCommandExecutor = async () => ({ kind: "failed", errorCode: "preconditionFailed" });
-    await outbox!.processCommands(db, executor, { deps });
+    await runOnce(db, executor, ["groups.leave"]);
     expect((await db.getCommand("f-1"))?.status).toBe("failed");
   });
 
@@ -220,10 +220,9 @@ describe.skipIf(!outbox)("command execution state machine (server/photon/outbox.
       expiresAt: "2020-01-01T00:00:00.000Z",
     });
     const executor: PhotonCommandExecutor = async () => { throw new Error("must not execute"); };
-    const result = await outbox!.processCommands(db, executor, { deps });
+    await runOnce(db, executor, ["chats.setTyping"]);
     const row = await db.getCommand("type-1");
     expect(["expired", "cancelled", "failed"]).toContain(row?.status);
-    expect(result.acknowledged).toBe(0);
   });
 
   it("gates a dependent send behind its upload completing first", async () => {
@@ -232,6 +231,7 @@ describe.skipIf(!outbox)("command execution state machine (server/photon/outbox.
     await enqueue(db, {
       commandId: "send-2", operation: "messages.sendAttachment",
       args: { chat: fx.DIRECT_CHAT, attachmentGuid: "att-pending" },
+      semanticKey: semanticKeyFor({ outputKind: "tool", toolCallId: "send-2" }),
       dependsOn: ["upload-1"],
     });
     const seen: string[] = [];
@@ -239,7 +239,7 @@ describe.skipIf(!outbox)("command execution state machine (server/photon/outbox.
       seen.push(claimed.commandId);
       return { kind: "acknowledged", result: { guid: "att-1" } };
     };
-    await outbox!.processCommands(db, executor, { deps });
+    await runOnce(db, executor, ["attachments.upload", "messages.sendAttachment"]);
     // The upload runs first (or alone); the dependent send may run only after.
     expect(seen.indexOf("upload-1")).not.toBe(-1);
     if (seen.includes("send-2")) {
@@ -257,7 +257,7 @@ describe.skipIf(!outbox)("command execution state machine (server/photon/outbox.
       expect(claimed.providerKey).toBe(providerKeyFor("k-1", 0));
       return { kind: "acknowledged" };
     };
-    await outbox!.processCommands(db, executor, { deps });
+    await runOnce(db, executor, ["polls.vote"]);
     expect((await db.getCommand("k-1"))?.status).toBe("acknowledged");
   });
 });

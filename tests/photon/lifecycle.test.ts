@@ -2,17 +2,16 @@
  * Absolute conversation lifetime: Bell's pre-upgrade 24-hour maximum is
  * preserved by a persisted deadline record and a bounded retirement sweep —
  * Eve 0.82's idle timeout and `ctx.cancel()` alone are not retirement.
- * Deadline store semantics run now; the worker sweep lives in the parallel
- * workstream and skips while `server/photon/worker.ts` (or the lifecycle
- * helper) is absent.
+ * Deadline store semantics and the worker's `retireDueSessions` sweep both
+ * run against the in-memory PhotonDb seam.
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { PHOTON_RETIRE_PATH, type PhotonConfig } from "../../server/photon/config";
+import { PHOTON_RETIRE_PATH } from "../../server/photon/config";
 import { bindingIdFor, eveAddressFor, sourceIdFor } from "../../server/photon/identity";
-import type { PhotonDb } from "../../server/photon/store";
+import { retireDueSessions } from "../../server/photon/worker";
 
-import { inMemoryDb, optionalModule, testConfig } from "./fixtures/harness";
+import { inMemoryDb, testConfig } from "./fixtures/harness";
 import * as fx from "./fixtures/sdk-events";
 
 const SOURCE_ID = sourceIdFor("test-project-0001", "inst-aaaa-bbbb", fx.RECEIVING_LINE);
@@ -96,21 +95,12 @@ describe("session deadline ledger", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* Retirement sweep — parallel workstream module                       */
+/* Retirement sweep — transport workstream module                      */
 /* ------------------------------------------------------------------ */
 
-interface LifecycleModule {
-  retireDueSessions(
-    db: PhotonDb,
-    config: PhotonConfig,
-    options?: { fetch?: typeof fetch; now?: () => Date; batchSize?: number },
-  ): Promise<{ retired: number; retried: number }>;
-}
+const lifecycle = { retireDueSessions };
 
-const lifecycle = await optionalModule<LifecycleModule>("../../../server/photon/worker.ts")
-  .then(async (mod) => mod ?? optionalModule<LifecycleModule>("../../../agent/lib/session-lifetime.ts"));
-
-describe.skipIf(!lifecycle)("retirement sweep", () => {
+describe("retirement sweep", () => {
   const config = testConfig();
 
   it("calls the private retire route, then marks the deadline retired", async () => {

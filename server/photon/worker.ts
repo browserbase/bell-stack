@@ -6,7 +6,9 @@ import { dirname, join } from "node:path";
 import type { PhotonConfig } from "./config.js";
 import { connectPhoton, discoverLineCredentials, type LineCredentials, type PhotonConnection } from "./client.js";
 import type { PhotonCommandDeps } from "./contracts.js";
-import { createDispatcher, retireViaInternalRoute } from "./dispatch.js";
+import { createDispatcher, retireDueSessions } from "./dispatch.js";
+
+export { retireDueSessions } from "./dispatch.js";
 import { startTransport, type PhotonTransport } from "./events.js";
 import { expireSweep } from "./interactions.js";
 import { createOutbox } from "./outbox.js";
@@ -206,14 +208,8 @@ export async function startPhotonWorker(
   loop("projection", config.worker.projectionPollMs, () => projector.runOnce());
   loop("reconciliation", config.worker.reconciliationMs, () => transport.runCatchUp());
   loop("interaction-expiry", SWEEP_INTERVAL_MS, () => expireSweep(store, now()));
-  loop("deadlines", SWEEP_INTERVAL_MS, async () => {
-    for (const deadline of await store.dueDeadlines(now(), DEADLINE_BATCH)) {
-      const result = await retireViaInternalRoute(config, deadline.eveSessionId, "absolute_deadline", fetcher);
-      if (result === "retryable") continue;
-      await store.markDeadlineRetired(deadline.eveSessionId, "absolute_deadline");
-      if (deadline.bindingId) await store.retireConversation(deadline.bindingId);
-    }
-  });
+  loop("deadlines", SWEEP_INTERVAL_MS, () =>
+    retireDueSessions(store, config, { fetch: fetcher, now, batchSize: DEADLINE_BATCH }));
   loop("health", HEALTH_INTERVAL_MS, async () => {
     const [health, inbox, outboxStats, sourceRow] = await Promise.all([
       Promise.resolve(transport.health()),

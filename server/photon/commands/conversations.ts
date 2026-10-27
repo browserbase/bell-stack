@@ -13,7 +13,7 @@ import type {
 } from "../contracts.js";
 import { CommandValidationError, commandProviderKey, executeOp, mapEffect } from "./shared.js";
 import { handleKey, normalizeHandle } from "../identity.js";
-import type { PhotonStore } from "../store.js";
+import type { PhotonDb } from "../store.js";
 
 /**
  * chats.* and groups.* executors. There is deliberately no archive/unarchive
@@ -21,7 +21,7 @@ import type { PhotonStore } from "../store.js";
  * mutations use native group GUIDs and the line's own permissions.
  */
 
-async function persistChat(store: PhotonStore, sourceId: string, chat: Chat): Promise<void> {
+async function persistChat(store: PhotonDb, sourceId: string, chat: Chat): Promise<void> {
   await store.upsertResource(sourceId, "chat", chat.guid, {
     displayName: chat.displayName,
     groupId: chat.groupId ?? null,
@@ -85,7 +85,7 @@ async function hasBackgroundReconcile(
 }
 
 export function conversationExecutors(
-  store: PhotonStore,
+  store: PhotonDb,
 ): Partial<Record<PhotonCommandOp, PhotonCommandExecutor>> {
   return {
     "chats.create": executeOp("chats.create", async (client, args, command) => {

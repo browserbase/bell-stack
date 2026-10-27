@@ -29,7 +29,7 @@ const eventsReadSchema = z.object({
 }).strict();
 
 /** Minimal Eve stream-event shape the projector consumes (defensive parse). */
-interface EveStreamEvent {
+export interface EveStreamEvent {
   readonly type: string;
   readonly data?: Record<string, unknown>;
   readonly meta?: { readonly id?: string; readonly at?: string };
@@ -57,7 +57,7 @@ export interface PhotonProjector {
   runOnce(): Promise<number>;
 }
 
-interface PromptInsert {
+export interface PromptInsert {
   readonly requestRef: string;
   readonly kind: "prompt" | "authorization";
   readonly permittedActor?: string;
@@ -65,7 +65,7 @@ interface PromptInsert {
   readonly responseMapping: Record<string, unknown>;
 }
 
-interface ProjectionContext {
+export interface ProjectionContext {
   readonly sessionId: string;
   readonly conversation: ConversationRow;
   /** Command ids enqueued this batch, for dependsOn chaining. */
@@ -166,7 +166,7 @@ function groupNeedsPrivateNotice(scope: "direct" | "group"): boolean {
  * Converts one Eve event into projected outputs. Returns `[]` for events
  * that carry no visible or command-shaped effect.
  */
-function projectEvent(ctx: ProjectionContext, event: EveStreamEvent): ProjectedOutput[] {
+export function projectEvent(ctx: ProjectionContext, event: EveStreamEvent): ProjectedOutput[] {
   const data = event.data ?? {};
   const turnId = typeof data.turnId === "string" ? data.turnId : undefined;
   const step = typeof data.stepIndex === "number" ? data.stepIndex : undefined;

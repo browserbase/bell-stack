@@ -379,6 +379,33 @@ export function inMemoryDb(): PhotonDb & {
       }
       return [...firstByChat.values()].slice(0, limit);
     },
+    async dispatchableChatScopes(sourceId, limit) {
+      const firstSeqByScope = new Map<string | null, bigint>();
+      for (const row of inbox.values()) {
+        if (row.sourceId !== sourceId || row.processingState !== "captured") continue;
+        if (row.disposition !== "admitted" && row.disposition !== "state_only") continue;
+        const scope = row.chatGuid ?? null;
+        const seq = num(row.sequenceNum);
+        const existing = firstSeqByScope.get(scope);
+        if (existing === undefined || seq < existing) firstSeqByScope.set(scope, seq);
+      }
+      return [...firstSeqByScope.entries()]
+        .sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+        .slice(0, limit)
+        .map(([scope]) => scope);
+    },
+    async dispatchableForChat(sourceId, chatGuid, limit) {
+      return [...inbox.values()]
+        .filter((row) => {
+          if (row.sourceId !== sourceId || row.processingState !== "captured") return false;
+          if (chatGuid === null)
+            return row.chatGuid === undefined && row.disposition === "state_only";
+          return row.chatGuid === chatGuid
+            && (row.disposition === "admitted" || row.disposition === "state_only");
+        })
+        .sort((a, b) => (num(a.sequenceNum) < num(b.sequenceNum) ? -1 : 1))
+        .slice(0, limit);
+    },
     async maxSequenceNum(sourceId, logEpoch) {
       let max: bigint | undefined;
       for (const row of inbox.values()) {

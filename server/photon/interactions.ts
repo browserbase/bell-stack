@@ -60,6 +60,7 @@ export async function matchInboundToInteractions(
   sourceId: string,
   envelope: PhotonEventEnvelope,
   conversation?: ConversationState,
+  now: Date = new Date(),
 ): Promise<InteractionMatch> {
   const chatGuid = envelope.chatGuid;
   if (!chatGuid) return NO_MATCH;
@@ -72,6 +73,9 @@ export async function matchInboundToInteractions(
   let promptRequestRef: string | undefined;
 
   for (const interaction of open) {
+    // An expired contract stays pending until the sweep, but it must never
+    // resolve — a late reply can never authorize a stale prompt.
+    if (interaction.expiresAt && interaction.expiresAt.getTime() <= now.getTime()) continue;
     if (!generationMatches(interaction, conversation)) continue;
     if (!actorPermitted(interaction, actor)) continue;
     const resolution = resolutionFor(interaction, envelope, actor);

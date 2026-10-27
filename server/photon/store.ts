@@ -40,6 +40,16 @@ export interface PhotonStore {
   pendingForChat(sourceId: string, chatGuid: string, limit: number): Promise<InboxRow[]>;
   /** Dispatchable rows across chats (each chat is ordered independently). */
   pendingDispatch(sourceId: string, limit: number): Promise<InboxRow[]>;
+  /**
+   * Chat scopes (chat_guid, or null for chat-less state events) holding
+   * captured admitted/state_only inbox rows, oldest pending row first.
+   */
+  dispatchableChatScopes(sourceId: string, limit: number): Promise<(string | null)[]>;
+  /**
+   * Captured admitted/state_only rows for one scope in provider order.
+   * A null chatGuid covers chat-less rows (state_only by construction).
+   */
+  dispatchableForChat(sourceId: string, chatGuid: string | null, limit: number): Promise<InboxRow[]>;
   maxSequenceNum(sourceId: string, logEpoch: string): Promise<string | undefined>;
   activationBoundary(sourceId: string): Promise<string | undefined>;
   setActivationBoundary(sourceId: string, boundary: string): Promise<void>;
@@ -508,6 +518,33 @@ export function createPhotonStore(databaseUrl: string, poolSize = 6): PhotonStor
              WHERE source_id = $1 AND disposition = 'admitted' AND processing_state = 'captured'
              ORDER BY chat_guid, sequence_num ASC LIMIT $2`,
           [sourceId, limit]);
+        return result.map(mapInbox);
+      },
+
+      async dispatchableChatScopes(sourceId, limit) {
+        const result = await query<{ chat_guid: string | null }>(client,
+          `SELECT chat_guid, min(sequence_num) AS first_seq FROM bell_photon_inbox
+             WHERE source_id = $1
+               AND disposition IN ('admitted', 'state_only') AND processing_state = 'captured'
+             GROUP BY chat_guid ORDER BY first_seq ASC NULLS LAST LIMIT $2`,
+          [sourceId, limit]);
+        return result.map((row) => row.chat_guid);
+      },
+
+      async dispatchableForChat(sourceId, chatGuid, limit) {
+        const result = chatGuid === null
+          ? await query(client,
+            `SELECT * FROM bell_photon_inbox
+               WHERE source_id = $1 AND chat_guid IS NULL
+                 AND disposition = 'state_only' AND processing_state = 'captured'
+               ORDER BY sequence_num ASC LIMIT $2`,
+            [sourceId, limit])
+          : await query(client,
+            `SELECT * FROM bell_photon_inbox
+               WHERE source_id = $1 AND chat_guid = $2
+                 AND disposition IN ('admitted', 'state_only') AND processing_state = 'captured'
+               ORDER BY sequence_num ASC LIMIT $3`,
+            [sourceId, chatGuid, limit]);
         return result.map(mapInbox);
       },
 

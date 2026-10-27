@@ -1,7 +1,7 @@
 import type { AdvancedIMessage } from "@photon-ai/advanced-imessage/grpc";
 
 import type { PhotonCommandExecutor, PhotonCommandOp } from "../contracts.js";
-import type { PhotonStore } from "../store.js";
+import type { PhotonDb } from "../store.js";
 import { downloadArtifact, messageToFileParts, uploadArtifact } from "../media.js";
 import { executeOp } from "./shared.js";
 
@@ -15,7 +15,7 @@ import { executeOp } from "./shared.js";
 export { downloadArtifact, messageToFileParts };
 
 export function mediaExecutors(
-  store: PhotonStore,
+  store: PhotonDb,
 ): Partial<Record<PhotonCommandOp, PhotonCommandExecutor>> {
   return {
     "attachments.upload": executeOp("attachments.upload", async (client, args, command) => {
@@ -42,7 +42,7 @@ export function mediaExecutors(
 /** Bounded download typed for the command layer's raw client. */
 export function downloadForModel(
   client: unknown,
-  store: PhotonStore,
+  store: PhotonDb,
   sourceId: string,
   chatGuid: string,
   attachmentGuid: string,
