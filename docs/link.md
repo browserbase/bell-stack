@@ -1,14 +1,14 @@
-# Link by Stripe: sandbox and wallet OAuth over Linq
+# Link by Stripe: sandbox and wallet OAuth over Photon
 
-Link by Stripe provides wallet authorization, spend approval, and checkout. Linq carries the
+Link by Stripe provides wallet authorization, spend approval, and checkout. Photon carries the
 messages; Eve by Vercel runs the agent and authorization flow. These are separate integrations.
 
 ## Sandbox: no database or saved wallet credentials
 
 Run a single long-lived Eve process with `LINK_SANDBOX=1`. Inject
 `LINK_SANDBOX_ACCESS_TOKEN` into its environment and set `LINK_SANDBOX_PRINCIPAL_ID` to the
-verified operator's Linq principal (`linq:<sender_handle.id>` from the signed Linq event,
-not a phone number). Keep the Linq receiving-number and sender allowlist checks enabled.
+verified operator's Photon principal (`photon:<sha256>` from the verified event identity,
+not a phone number). Keep the Photon receiving-line and sender allowlist checks enabled.
 The token is obtained through the operator's Link application and is never requested in chat.
 Bell does not write it to a file, database, workflow state, or model output. Do not save it in
 `.env` or commit it. No `DATABASE_URL`, migrations, OAuth client, or encryption key is needed
@@ -37,7 +37,7 @@ retain their own records; Bell's no-wallet-storage rule does not control those a
 
 ## Real Link: operator-owned OAuth and storage
 
-Bell connects a wallet to the verified sender of a private Linq message. The user texts Bell,
+Bell connects a wallet to the verified sender of a private Photon message. The user texts Bell,
 opens Link's consent page, and returns to the same conversation. Eve suspends and resumes the
 tool call. There is no Bell login, static wallet token, or wallet access from the web demo.
 
@@ -47,7 +47,7 @@ The Eve catalog's static-token quick start is not Bell's configuration.
 
 ## Configure real Link
 
-1. Complete [Linq setup](linq.md), including signed webhooks and the trusted-number allowlist.
+1. Complete [Photon setup](photon.md), including the managed line and sender allowlist.
    Retain the private-operator policy: saved browser Contexts and vaults are still shared.
 2. [Register a Link OAuth client](https://docs.stripe.com/agentic-commerce/link-cli/oauth).
    Register exactly `https://<bell-host>/api/link/oauth/callback`. Register every deployment
@@ -130,7 +130,7 @@ Disconnect does not cancel orders or merchant subscriptions or undo an already s
 
 ## Real Link persistence and recovery
 
-Grants use `(issuer, principal ID)` from verified Linq authentication. They survive conversation
+Grants use `(issuer, principal ID)` from verified Photon authentication. They survive conversation
 changes and restarts and cannot be selected through model-supplied IDs. Different senders have
 separate grants, even for the same operator. A web conversation or second phone is not paired
 automatically with an existing wallet.
@@ -204,6 +204,6 @@ against intercepted synthetic merchant pages. Those tests submit fixture forms, 
 
 For an operator-run live smoke test, text “List my Link payment methods,” complete consent, and
 verify the response arrives in the same chat. Send a follow-up to confirm grant reuse, then
-disconnect and confirm the next request needs consent. This uses real Linq and Link services.
+disconnect and confirm the next request needs consent. This uses real Photon and Link services.
 Live checkout needs a separately specified merchant, item, and budget; automated tests and the
 wallet smoke test do not submit purchases.

@@ -2,6 +2,7 @@ import { defineInteractiveAuthorization, isConnectionAuthorizationRequiredError,
 import type { ToolContext } from "eve/tools";
 import { getLinkOAuth, linkOwner, safeLinkCall, type LinkResume } from "../../server/link/oauth";
 import { assertSandboxRequest, isLinkSandbox, sandboxToken } from "../../server/link/sandbox";
+import { messagingPrincipal } from "./messaging-auth";
 
 export function createLinkAuth(service = getLinkOAuth) {
   const hosted = () => {
@@ -32,9 +33,12 @@ export function createLinkAuth(service = getLinkOAuth) {
 export const linkAuth = createLinkAuth();
 
 export function linkPrincipal(ctx: ToolContext): ConnectionPrincipal {
-  const auth = ctx.session.auth.current;
-  const principal: ConnectionPrincipal = auth?.principalType === "user" && auth.authenticator === "linq-message"
-    ? { type: "user", id: auth.principalId, issuer: auth.issuer }
+  // Link is private-only: only a verified direct-message Photon principal maps
+  // to a wallet owner. Group sessions and any other caller resolve to
+  // { type: "app" }, which fails linkOwner — deliberate fail-closed.
+  const verified = messagingPrincipal(ctx);
+  const principal: ConnectionPrincipal = verified?.audience === "direct"
+    ? verified.principal
     : { type: "app" };
   linkOwner(principal);
   return principal;

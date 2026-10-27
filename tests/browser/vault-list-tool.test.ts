@@ -52,6 +52,15 @@ describe("configured vault discovery", () => {
 
 it("does not expose the operator's vault to an iMessage sender", async () => {
   mocks.onePasswordList.mockClear();
-  await expect(vaultList.execute({ provider: "onepassword" }, { session: { auth: { current: { authenticator: "linq-message" } } } } as never)).rejects.toThrow("personal credentials");
+  // A fully verified direct Photon principal still cannot reach shared
+  // operator vaults — they are personal-credential paths only.
+  const photonAuth = {
+    principalType: "user",
+    authenticator: "photon-imessage",
+    issuer: "photon",
+    principalId: `photon:${"a".repeat(64)}`,
+    attributes: { "photon:audience": "direct" },
+  };
+  await expect(vaultList.execute({ provider: "onepassword" }, { session: { auth: { current: photonAuth } } } as never)).rejects.toThrow("personal credentials");
   expect(mocks.onePasswordList).not.toHaveBeenCalled();
 });

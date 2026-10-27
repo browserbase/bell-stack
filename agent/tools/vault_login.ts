@@ -4,6 +4,7 @@ import { z } from "zod";
 import { onePasswordVault } from "../../server/browser/vault/onepassword.js";
 import { nativeVault } from "../../server/browser/vault/native.js";
 import { runBrowserOperation, runCancelableBrowserWork } from "../lib/browser-runtime";
+import { messagingPrincipal } from "../lib/messaging-auth";
 import { taskState } from "../lib/task-state";
 
 const selector = z.string().min(1).max(500);
@@ -23,14 +24,16 @@ export default defineTool({
     totpFlow: z.enum(["same_form", "after_submit"]).default("same_form"),
   }),
   async execute(input, ctx) {
-    if (ctx.session.auth?.current?.authenticator === "linq-message") throw new Error("Shared operator vaults are not available over iMessage. Use onepassword_login for personal credentials.");
+    // Shared operator vaults are denied to every messaging principal — direct
+    // and group audiences alike.
+    if (messagingPrincipal(ctx)) throw new Error("Shared operator vaults are not available over iMessage. Use onepassword_login for personal credentials.");
     const readLogin = () => {
       if (input.provider === "native") return nativeVault.login(input.itemId);
       if (!input.vaultId) throw new Error("A vault ID is required for a 1Password login.");
       return onePasswordVault.login(input.vaultId, input.itemId);
     };
-    const output = await runCancelableBrowserWork(ctx.session.id, ctx.abortSignal, () =>
-      runBrowserOperation(ctx.session.id, async (browser) => {
+    const output = await runCancelableBrowserWork(ctx, ctx.abortSignal, () =>
+      runBrowserOperation(ctx, async (browser) => {
         const login = await readLogin();
         ctx.abortSignal.throwIfAborted();
         return browser.secureLogin({

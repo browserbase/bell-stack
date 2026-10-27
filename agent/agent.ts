@@ -12,5 +12,12 @@ export default defineAgent({
       "pg",
     ],
   },
+  experimental: {
+    workflow: {
+      // Keep finished-run data at the World default so the Photon output
+      // projector and incident recovery can re-read completed sessions.
+      retention: "default",
+    },
+  },
   limits: { sessionTimeoutMs: 24 * 60 * 60 * 1_000 },
 });

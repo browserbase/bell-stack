@@ -39,7 +39,7 @@ describe.skipIf(!databaseUrl)("1Password OAuth and approval lifecycle with Postg
   beforeEach(() => {
     vi.stubEnv("ONEPASSWORD_ENABLED", "true");
     now = Date.now();
-    principal = { type: "user", issuer: "linq", id: `linq:${randomUUID()}` };
+    principal = { type: "user", issuer: "photon", id: `photon:${randomBytes(32).toString("hex")}` };
     config = { origin: "https://bell.example", redirectUri: "https://bell.example/api/onepassword/callback", clientId: "client", clientSecret: "secret", encryptionKey: randomBytes(32), databaseUrl: databaseUrl! };
     callback = `https://bell.example/eve/v1/connections/onepassword/callback/${randomUUID()}/hook`;
     store = new OnePasswordStore(pool, config.encryptionKey);
@@ -86,7 +86,7 @@ describe.skipIf(!databaseUrl)("1Password OAuth and approval lifecycle with Postg
     await expect(oauth.capture({ state: flow.state, code: "code", integrationKey: integrationKey() }, "wrong-cookie")).rejects.toThrow();
     expect(fetcher).not.toHaveBeenCalled();
     const response = await capture(flow), target = new URL((await response.json()).location);
-    await expect(oauth.complete({ ...principal, id: "linq:other" }, callback, flow.started.resume, Object.fromEntries(target.searchParams))).rejects.toThrow();
+    await expect(oauth.complete({ ...principal, id: `photon:${randomBytes(32).toString("hex")}` }, callback, flow.started.resume, Object.fromEntries(target.searchParams))).rejects.toThrow();
   });
   it("retains the one-time key across a failed exchange and a reconnect without a fragment", async () => {
     const flow = await begin();
@@ -149,8 +149,8 @@ describe.skipIf(!databaseUrl)("1Password OAuth and approval lifecycle with Postg
   });
   it("rejects ciphertext swapped between owners", async () => {
     await connect();
-    await pool.query("INSERT INTO bell_onepassword_connections(owner,encrypted_state) SELECT $1,encrypted_state FROM bell_onepassword_connections WHERE owner=$2", [ownerOf({ ...principal, id: "linq:other" }), ownerOf(principal)]);
-    await expect(oauth.getToken({ ...principal, id: "linq:other" })).rejects.toThrow();
+    await pool.query("INSERT INTO bell_onepassword_connections(owner,encrypted_state) SELECT $1,encrypted_state FROM bell_onepassword_connections WHERE owner=$2", [ownerOf({ ...principal, id: `photon:${randomBytes(32).toString("hex")}` }), ownerOf(principal)]);
+    await expect(oauth.getToken({ ...principal, id: `photon:${randomBytes(32).toString("hex")}` })).rejects.toThrow();
   });
   async function startLogin(check: ConstructorParameters<typeof OnePasswordLogin>[1]) {
     await connect();
@@ -242,7 +242,7 @@ describe.skipIf(!databaseUrl)("1Password OAuth and approval lifecycle with Postg
     });
   });
   it("resumes Eve in the original authenticated session without journaling provider credentials", async () => {
-    const context = new ContextContainer(), auth = { principalType: "user" as const, principalId: principal.id, issuer: "linq", authenticator: "linq-message", attributes: {} };
+    const context = new ContextContainer(), auth = { principalType: "user" as const, principalId: principal.id, issuer: "photon", authenticator: "photon-imessage", attributes: { "photon:audience": "direct" } };
     context.set(AuthKey, auth); context.set(SessionIdKey, "original-session"); context.set(SessionKey, { sessionId: "original-session", auth: { current: auth } } as never); context.set(CallbackBaseUrlKey, config.origin);
     const scoped = { scope: "onepassword", authorization: createOnePasswordAuth(() => oauth), connection: { url: "" } };
     await contextStorage.run(context, async () => {

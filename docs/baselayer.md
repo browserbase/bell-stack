@@ -2,7 +2,7 @@
 
 Bell's `merchant_access` tool mints an L2 credential and presents it to a compatible merchant
 inside the conversation's existing Browserbase browser. The same tool is available from the
-web interface and a Linq chat. Each conversation keeps its own browser.
+web interface and a Photon chat. Each conversation keeps its own browser.
 
 ```text
 Bell -> merchant KYA profile -> Baselayer mint -> merchant nonce
@@ -22,7 +22,7 @@ STAGEHAND_BROWSER=browserbase
 ```
 
 Keep the OpenAI and Browserbase credentials already used by Bell. For the phone demo, also keep
-the Linq configuration from [the messaging guide](linq.md). Restart Bell and start a new
+the Photon configuration from [the messaging guide](photon.md). Restart Bell and start a new
 conversation after changing browser logging settings. The browser runtime refuses credential
 presentation if the browser session started with logging enabled.
 
@@ -42,7 +42,7 @@ reference. Do not substitute an unrelated identity just to make a mint pass.
 
 ## Test the flow
 
-With `pnpm dev` running, keep the same web conversation or text the same Linq chat:
+With `pnpm dev` running, keep the same web conversation or text the same Photon chat:
 
 1. "Open https://bell-stack-demo-site.vercel.app/protected with ordinary navigation and report
    the result." Expect `401 CREDENTIAL_MISSING`.
@@ -80,7 +80,7 @@ the agent integration; the merchant verifier is deployed separately.
 
 Best Buy remains an ordinary browsing example. Do not add it to the credential flow until its
 Baselayer merchant support and required scope are confirmed. Changing a webhook target to Best
-Buy does not configure merchant verification; Linq webhooks still point to Bell.
+Buy does not configure merchant verification; the Photon channel still points to Bell.
 
 ## Troubleshooting and verification limits
 

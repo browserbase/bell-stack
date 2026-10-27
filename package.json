@@ -10,8 +10,11 @@
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 4320",
     "build:agent": "eve build --skip-sandbox-prewarm && node scripts/package-browser-assets.mjs",
+    "build:worker": "tsc -p tsconfig.photon-worker.json",
     "build": "pnpm build:agent && next build",
+    "worker": "node .photon-worker/scripts/photon-worker.js",
     "start": "next start --hostname 127.0.0.1 --port 4320",
+    "start:bell": "node scripts/run-bell.mjs",
     "test": "vitest run",
     "repro:stagehand-extensions": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/repro-stagehand-extensions.mjs",
     "typecheck": "tsc --noEmit",
@@ -25,10 +28,14 @@
     "@ai-sdk/openai": "4.0.46",
     "@browserbasehq/sdk": "2.18.0",
     "@browserbasehq/stagehand": "4.3.0",
+    "@grpc/grpc-js": "^1.14.6",
+    "@photon-ai/advanced-imessage": "2.4.0",
     "@stripe/link-integrations-eve": "0.3.4",
     "ai": "7.0.137",
-    "eve": "0.79.1",
+    "eve": "0.82.0",
     "next": "16.4.3",
+    "nice-grpc": "^2.1.18",
+    "nice-grpc-common": "^2.0.4",
     "pg": "8.23.1",
     "playwright-core": "1.62.1",
     "react": "19.3.0",
@@ -47,7 +54,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/browserbase/bell-stack.git"
+    "url": "https://github.com/tecxbro/bell-stack-photon.git"
   },
   "license": "MIT",
   "pnpm": {

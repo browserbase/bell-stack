@@ -5,6 +5,7 @@ import {
   type ConnectionPrincipal,
 } from "eve/connections";
 import { z } from "zod";
+import { isVerifiedPhotonPrincipal } from "../photon/principal";
 import { hash, linkConfig, LinkSetupError, seal, unseal, type LinkConfig } from "./config";
 import { createLinkStore, ownerKey, type Grant, type LinkOwner, type LinkStore, type OwnerStore } from "./store";
 
@@ -25,8 +26,10 @@ function failed(reason: string): never {
 }
 
 export function linkOwner(principal: ConnectionPrincipal): LinkOwner {
-  if (principal.type !== "user" || principal.issuer !== "linq"
-    || !principal.id.startsWith("linq:") || principal.id.length <= 5 || principal.id.length > 512)
+  // Photon principals are `photon:` + sha256 of the verified canonical handle
+  // tuple. Grants persisted under retired provider owners stay orphaned: every
+  // wallet requires fresh consent under the new owner identity.
+  if (!isVerifiedPhotonPrincipal(principal))
     return failed("principal_required");
   return { issuer: principal.issuer, id: principal.id };
 }

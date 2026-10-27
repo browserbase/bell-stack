@@ -8,7 +8,7 @@ import approval from "../agent/extensions/link/tools/request_spend_approval";
 import list from "../agent/extensions/link/tools/list_spend_requests";
 import disconnect from "../agent/tools/link_disconnect";
 
-const context = { session: { id: "linq-chat-session" }, abortSignal: new AbortController().signal } as never;
+const context = { session: { id: "photon-chat-session" }, abortSignal: new AbortController().signal } as never;
 const purchase = {
   credential_type: "card" as const, amount: 4200, currency: "usd",
   request_approval: true, test: false,

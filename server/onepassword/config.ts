@@ -1,6 +1,8 @@
 import { ConnectionAuthorizationFailedError, type ConnectionPrincipal } from "eve/connections";
 import { z } from "zod";
 
+import { isVerifiedPhotonPrincipal } from "../photon/principal";
+
 export const scopes = "brokered-credentials:request-access brokered-credentials:read";
 export interface Config { origin: string; redirectUri: string; clientId: string; clientSecret: string; databaseUrl: string; encryptionKey: Buffer }
 export function failed(reason: string): never {
@@ -11,7 +13,8 @@ export function requirePersonalConnections(): void {
   if (!personalConnectionsEnabled()) failed("personal_1password_disabled");
 }
 export function ownerOf(principal: ConnectionPrincipal): string {
-  if (principal.type !== "user" || principal.issuer !== "linq" || !/^linq:.{1,507}$/.test(principal.id)) return failed("authenticated_sender_required");
+  // Retired provider owner rows stay orphaned; consent is fresh per Photon principal.
+  if (!isVerifiedPhotonPrincipal(principal)) return failed("authenticated_sender_required");
   return JSON.stringify([principal.issuer, principal.id]);
 }
 export function configuration(): Config {

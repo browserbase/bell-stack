@@ -1,7 +1,7 @@
 import { requireReusableContexts } from "../onepassword/browser-policy";
 import Browserbase from "@browserbasehq/sdk";
 
-import { getContextMetadataStore } from "./context-metadata-store.js";
+import { getContextMetadataStore, isOwnedGroupContext, isReusableContext } from "./context-metadata-store.js";
 
 export interface AgentContextRecord {
   id: string;
@@ -17,15 +17,12 @@ export async function listAgentContexts(): Promise<AgentContextRecord[]> {
   requireReusableContexts();
   const sdk = browserbase();
   const metadata = getContextMetadataStore();
-  const local = await metadata.read();
   const configuredId = process.env.BROWSERBASE_CONTEXT_ID;
-  if (configuredId && !local.contexts[configuredId]) {
+  if (configuredId && !(await metadata.read()).contexts[configuredId])
     await metadata.add(configuredId, "Configured Context");
-    return listAgentContexts();
-  }
+  const local = await metadata.listReusable();
   const records = await Promise.all(
     Object.entries(local.contexts).map(async ([id, item]) => {
-      if (item.status === "draft") return undefined;
       try {
         const remote = await sdk.contexts.retrieve(id);
         return {
@@ -64,6 +61,51 @@ export async function createAgentContext(name: string): Promise<AgentContextReco
   };
 }
 
+/**
+ * Creates a fresh isolated Context for a group browser task. The Context is
+ * tagged with the verified owning principal and the "group" audience so it can
+ * never be listed, selected, promoted or reused as a shared/personal Context.
+ * It is deleted when the task closes; the draft TTL sweep covers failures.
+ */
+export async function createIsolatedAgentContext(
+  ownerSessionId: string,
+  ownerId: string,
+): Promise<AgentContextRecord> {
+  const name = `Bell group ${shortSessionId(ownerSessionId)}`;
+  const remote = await browserbase().contexts.create({
+    name,
+    ...(process.env.BROWSERBASE_PROJECT_ID
+      ? { projectId: process.env.BROWSERBASE_PROJECT_ID }
+      : {}),
+  });
+  const expiresAt = new Date(Date.now() + draftTtlMs());
+  await getContextMetadataStore().addDraft(remote.id, name, ownerSessionId, expiresAt, new Date(), { ownerId, audience: "group" });
+  return {
+    id: remote.id,
+    name,
+    selected: false,
+    writerActive: false,
+    status: "draft",
+  };
+}
+
+/**
+ * Deletes an isolated group Context remotely and drops its metadata row, but
+ * only when the row is confirmed group-owned by this session. Returns false
+ * without touching shared/foreign Contexts.
+ */
+export async function releaseIsolatedContext(
+  id: string,
+  ownerSessionId: string,
+): Promise<boolean> {
+  const metadata = getContextMetadataStore();
+  const row = (await metadata.read()).contexts[id];
+  if (!isOwnedGroupContext(row, ownerSessionId)) return false;
+  await deleteContext(id);
+  await metadata.remove(id);
+  return true;
+}
+
 export async function ensureAgentContext(
   ownerSessionId: string,
   currentContextId?: string,
@@ -83,6 +125,8 @@ export async function ensureAgentContext(
     ) {
       await deleteContext(currentContextId);
       await metadata.remove(currentContextId);
+    } else if (!isReusableContext(current)) {
+      // Isolated group Contexts are never reused outside their owning task.
     } else {
       try {
         const remote = await sdk.contexts.retrieve(currentContextId);
@@ -127,11 +171,11 @@ export async function promoteAgentContext(id: string, name?: string): Promise<Ag
   const sdk = browserbase();
   const remote = await sdk.contexts.retrieve(id);
   const metadata = getContextMetadataStore();
-  const local = await metadata.read();
+  const existing = await metadata.assertReusable(id);
   const cleanName = validateName(
-    name?.trim() || local.contexts[id]?.name || remote.name || "Saved Context",
+    name?.trim() || existing?.name || remote.name || "Saved Context",
   );
-  if (!local.contexts[id]) await metadata.add(id, cleanName);
+  if (!existing) await metadata.add(id, cleanName);
   await metadata.promote(id, cleanName);
   return {
     id,
@@ -152,8 +196,10 @@ export async function isDraftAgentContext(id: string, ownerSessionId?: string): 
 export async function selectAgentContext(id: string): Promise<void> {
   requireReusableContexts();
   validateId(id);
+  const metadata = getContextMetadataStore();
+  await metadata.assertReusable(id);
   await browserbase().contexts.retrieve(id);
-  await getContextMetadataStore().select(id);
+  await metadata.select(id);
 }
 
 async function deleteExpiredDraftContexts(now: Date): Promise<void> {
@@ -165,15 +211,15 @@ async function deleteExpiredDraftContexts(now: Date): Promise<void> {
       item.status === "draft" && Boolean(expiresAt) && Date.parse(expiresAt ?? "") <= now.getTime()
     );
   });
-  for (const [id] of expired) {
+  await Promise.all(expired.map(async ([id]) => {
     try {
       await deleteContext(id);
     } catch {
       // Keep the record so another request can retry deleting the remote data.
-      continue;
+      return;
     }
     await metadata.remove(id);
-  }
+  }));
 }
 
 async function deleteContext(id: string): Promise<void> {
@@ -197,10 +243,14 @@ function shortSessionId(value: string): string {
   return safe.slice(-12) || new Date().toISOString().slice(0, 10);
 }
 
+let cachedBrowserbase: { apiKey: string; sdk: Browserbase } | undefined;
+
 function browserbase(): Browserbase {
   const apiKey = process.env.BROWSERBASE_API_KEY;
   if (!apiKey) throw new Error("Browserbase is not configured.");
-  return new Browserbase({ apiKey });
+  if (cachedBrowserbase?.apiKey !== apiKey)
+    cachedBrowserbase = { apiKey, sdk: new Browserbase({ apiKey }) };
+  return cachedBrowserbase.sdk;
 }
 
 function validateName(value: string): string {

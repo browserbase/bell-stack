@@ -3,6 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { hash, linkConfig, LinkSetupError, seal, unseal } from "../server/link/config";
 import { linkOwner, safeLinkCall } from "../server/link/oauth";
 import { linkAuth } from "../agent/lib/link-auth";
+import { photonPrincipalId } from "../server/photon/identity";
+
+// A verified private Photon messaging principal (`photon:` + 64-hex digest).
+const sender = photonPrincipalId("test-project", { kind: "phone", value: "+12025550123" });
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -25,13 +29,15 @@ describe("Link credential boundary", () => {
     for (const principal of [
       { type: "app" as const },
       { type: "user" as const, id: "local-dev" },
-      { type: "user" as const, id: "linq:person", issuer: "web" },
-      { type: "user" as const, id: "", issuer: "linq" },
+      { type: "user" as const, id: sender, issuer: "web" },
+      { type: "user" as const, id: "", issuer: "photon" },
+      { type: "user" as const, id: "photon:not-a-digest", issuer: "photon" },
+      { type: "user" as const, id: "legacy:sender", issuer: "legacy" },
     ]) {
       expect(() => linkOwner(principal)).toThrow();
       await expect(linkAuth.getToken({ principal, connection: { url: "" } })).rejects.toMatchObject({ reason: "principal_required" });
     }
-    expect(linkOwner({ type: "user", issuer: "linq", id: "linq:sender" })).toEqual({ issuer: "linq", id: "linq:sender" });
+    expect(linkOwner({ type: "user", issuer: "photon", id: sender })).toEqual({ issuer: "photon", id: sender });
   });
 
   it("does not expose arbitrary database or transport errors", async () => {

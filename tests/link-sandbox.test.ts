@@ -17,8 +17,8 @@ import { linkCallback } from "../server/link/callback";
 import { assertSandboxRequest, rememberSandboxRequest, sandboxPurchase } from "../server/link/sandbox";
 import { quarantineBrowser, withBrowserPrivacyLock } from "../server/browser/privacy-lock";
 
-const principal = { type: "user" as const, issuer: "linq", id: "linq:sandbox-operator" };
-const context = { session: { id: "sandbox-session", auth: { current: { principalType: "user", principalId: principal.id, issuer: "linq", authenticator: "linq-message" } } }, abortSignal: new AbortController().signal, getToken: vi.fn(), requireAuth: vi.fn() } as unknown as ToolContext;
+const principal = { type: "user" as const, issuer: "photon", id: "photon:" + "a".repeat(64) };
+const context = { session: { id: "sandbox-session", auth: { current: { principalType: "user", principalId: principal.id, issuer: "photon", authenticator: "photon-imessage", subject: "phone:+12025550123", attributes: { "photon:audience": "direct" } } } }, abortSignal: new AbortController().signal, getToken: vi.fn(), requireAuth: vi.fn() } as unknown as ToolContext;
 const purchase = { credential_type: "card" as const, amount: 100, currency: "usd", request_approval: true, test: false, merchant_name: "Fixture", merchant_url: "https://merchant.invalid", context: "The operator requested one synthetic fixture item for exactly one dollar, including all tax and shipping, solely to test this integration.", idempotency_key: "existing-live-key" };
 const metadata = (id = `spend_${randomUUID()}`) => ({ id, status: "approved", amount: 100, currency: "usd", merchant_url: purchase.merchant_url, created_at: "now", updated_at: "now" });
 beforeEach(() => {
@@ -60,7 +60,7 @@ describe("database-free Link sandbox", () => {
   });
   it("rejects other senders, anonymous callers, and a missing runtime token", async () => {
     const execute = vi.spyOn(native.create_spend_request, "execute");
-    vi.stubEnv("LINK_SANDBOX_PRINCIPAL_ID", "linq:another-sender");
+    vi.stubEnv("LINK_SANDBOX_PRINCIPAL_ID", "photon:" + "b".repeat(64));
     await expect(create.execute(purchase, context)).rejects.toThrow("configured Link sandbox operator");
     expect(() => freshLinkContext({ ...context, session: { auth: { current: undefined } } } as never, undefined, "create")).toThrow();
     vi.stubEnv("LINK_SANDBOX_PRINCIPAL_ID", principal.id); vi.stubEnv("LINK_SANDBOX_ACCESS_TOKEN", "");

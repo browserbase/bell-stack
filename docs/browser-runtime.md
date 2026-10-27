@@ -86,7 +86,7 @@ Personal iMessage [1Password Agentic Autofill](onepassword.md) is disabled by de
 hosted extension support and live verification. Keep `ONEPASSWORD_ENABLED=false` and
 `BROWSERBASE_1PASSWORD_EXTENSION_ID` unset. The staged implementation uses per-sender encrypted
 OAuth connections and explicit approval in the 1Password app. Operator SDK/CLI vault tools
-are not available over Linq. Personal mode disables reusable Contexts; each conversation
+are not available over Photon messaging. Personal mode disables reusable Contexts; each conversation
 keeps a private browser, and failed fills require a new conversation.
 
 Existing encrypted local vaults remain readable through the `native` provider. No vault writer
