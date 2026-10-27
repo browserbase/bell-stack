@@ -5,6 +5,7 @@ import { closeBrowserRuntime, runBrowserOperation } from "../../agent/lib/browse
 import { applyCaptchaTransition, closeTaskBrowser, taskState } from "../../agent/lib/task-state";
 import { BrowserSession, CaptchaHandoffError } from "../../server/browser/browser-session";
 import { ContextContainer, contextStorage } from "../../node_modules/eve/dist/src/context/container.js";
+import { stagehandFixture } from "./stagehand-fixture";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -18,17 +19,22 @@ describe("resuming a browser after CAPTCHA handoff", () => {
         captcha: { status, attemptCount: 1, journal: [] },
       }));
       const page = {
+        pageId: "captcha-page",
         snapshot: vi.fn(async () => ({ formattedTree: "Account home", xpathMap: {} })),
         url: async () => "https://shop.example/account",
         title: async () => "Account",
+        evaluate: async (expression: string | (() => unknown)) =>
+          typeof expression === "function"
+            ? "https://shop.example/account"
+            : { width: 1360, height: 900 },
+        on: vi.fn(async () => ({ unsubscribe: async () => {} })),
       };
+      const native = stagehandFixture(page);
       const close = vi.fn(async () => {});
       await runBrowserOperation(id, async browser => {
         vi.spyOn(browser, "start").mockResolvedValue();
         vi.spyOn(browser, "close").mockImplementation(close);
-        Object.assign(browser, { stagehand: {
-          experimentalBatch: <T>(operation: (context: { page: typeof page }) => Promise<T>) => operation({ page }),
-        } });
+        Object.assign(browser, { stagehand: native.stagehand, browser: native.browser });
       });
       try {
         // Before the reply, the restored challenge must still gate all browser work.

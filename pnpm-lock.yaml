@@ -49,6 +49,9 @@ importers:
       react-dom:
         specifier: 19.3.0
         version: 19.3.0(react@19.3.0)
+      stagehand-middleware:
+        specifier: 0.1.1
+        version: 0.1.1(@browserbasehq/stagehand@4.3.0)
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -2433,6 +2436,12 @@ packages:
 
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
+
+  stagehand-middleware@0.1.1:
+    resolution: {integrity: sha512-q9tZ8Gay5dksY1uczUiq4o3bMxXmg2l6SZhvSDC9pI72vN9JQWfswzkNWTVGNj9yUN+OBfqNyMN8tu78+8I7mQ==}
+    engines: {node: '>=22.18.0'}
+    peerDependencies:
+      '@browserbasehq/stagehand': '>=4.3.0 <5'
 
   std-env@4.3.0:
     resolution: {integrity: sha512-OtU/EgQ1kIm5KwqQpBC6ZEMXrZRui11w8zgfTWp8cdO9B8OaPsbA8bTHO2P+HNo1VlUTGMVBwPhydu6poeXiag==}
@@ -5124,6 +5133,11 @@ snapshots:
   stable-hash@0.0.5: {}
 
   stackback@0.0.2: {}
+
+  stagehand-middleware@0.1.1(@browserbasehq/stagehand@4.3.0):
+    dependencies:
+      '@browserbasehq/stagehand': 4.3.0
+      zod: 4.6.7
 
   std-env@4.3.0: {}
 

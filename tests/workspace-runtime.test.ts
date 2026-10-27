@@ -10,6 +10,7 @@ import lifecycle from "../agent/hooks/browser-lifecycle";
 import run from "../agent/tools/run";
 import snapshot from "../agent/tools/snapshot";
 import type { ConversationState } from "../server/browser/types";
+import { stagehandFixture } from "./browser/stagehand-fixture";
 import {
   ContextContainer,
   contextStorage,
@@ -36,17 +37,31 @@ async function withEveContext(check: () => Promise<void>) {
 describe("Bell's shared browser runtime", () => {
   it("redacts form values and preserves the browser identity through Bell's actual import", () => withEveContext(async () => {
     vi.stubEnv("BELL_HANDOFF_SECRET", "synthetic-shared-handoff-secret-at-least-32-bytes");
-    const fill = vi.fn(async () => {});
-    const page = { locator: () => ({ fill }), url: async () => "https://shop.example/", title: async () => "Fixture" };
+    const fill = vi.fn<(value: string) => Promise<void>>().mockResolvedValue();
+    const page = {
+      pageId: "workspace-page",
+      locator: () => ({ fill: (value: string) => fill(value) }),
+      url: async () => "https://shop.example/",
+      title: async () => "Fixture",
+      evaluate: async (expression: string | (() => unknown)) => {
+        if (typeof expression === "function") return "https://shop.example/";
+        return expression.includes("return await execute(")
+          ? { count: 1, visible: true }
+          : { width: 1360, height: 900 };
+      },
+    };
+    const native = stagehandFixture(page);
     await runBrowserOperation(sessionId, async browser => {
       const internal = browser as unknown as { state: ConversationState; gateCaptcha(): Promise<void> };
       internal.state.browser = { provider: "browserbase", status: "active", sessionId: "synthetic-hosted-session" };
       vi.spyOn(browser, "start").mockResolvedValue();
       vi.spyOn(browser, "close").mockResolvedValue();
       vi.spyOn(internal, "gateCaptcha").mockResolvedValue();
-      Object.assign(browser, { browserbase: {}, stagehand: {
-        experimentalBatch: async <T, A>(callback: (context: { page: typeof page }, args: A) => Promise<T>, args: A) => callback({ page }, args),
-      } });
+      Object.assign(browser, {
+        browserbase: {},
+        stagehand: native.stagehand,
+        browser: native.browser,
+      });
     });
     const value = "synthetic-private-form-value";
     const output = await run.execute({ actions: [{ action: "fill", target: "#field", value }] }, context());

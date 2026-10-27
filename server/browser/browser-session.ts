@@ -1,5 +1,6 @@
 import { personalBrowserEnabled, requireReusableContexts } from "../onepassword/browser-policy";
 import Browserbase from "@browserbasehq/sdk";
+import { StagehandFacadeTools } from "stagehand-middleware";
 import {
   localBrowser,
   Stagehand,
@@ -41,6 +42,7 @@ const DISCOVERY_HOSTS = ["google.", "bing.com", "duckduckgo.com", "search.brave.
 
 export class BrowserSession {
   private stagehand?: Stagehand;
+  private facade?: StagehandFacadeTools;
   private browser?: StagehandBrowser;
   private browserbase?: Browserbase;
   private remoteSessionId?: string;
@@ -212,14 +214,7 @@ export class BrowserSession {
       await this.start();
       await this.gateCaptcha();
       const started = performance.now();
-      const result = await this.requireStagehand().experimentalBatch(async ({ page }) => {
-        const snapshot = await page.snapshot({ includeIframes: true });
-        return {
-          snapshot,
-          url: await page.url(),
-          title: await page.title(),
-        };
-      });
+      const result = await this.captureSnapshot();
       await this.gateCaptcha();
       this.xpathMap = result.snapshot.xpathMap;
       const url = result.url;
@@ -288,40 +283,8 @@ export class BrowserSession {
           ? { ...item, target: this.resolveTarget(item.target) }
           : item,
       );
-      const result = await this.requireStagehand().experimentalBatch(
-        async ({ page }, batchActions) => {
-          for (const item of batchActions) {
-            switch (item.action) {
-              case "goto":
-                await page.goto(item.url);
-                await page.waitForLoadState("domcontentloaded", 15_000);
-                break;
-              case "click":
-                await page.locator(item.target).click();
-                break;
-              case "fill":
-                await page.locator(item.target).fill(item.value);
-                break;
-              case "type":
-                await page.locator(item.target).type(item.value);
-                break;
-              case "press":
-                if (item.target) await page.locator(item.target).click();
-                await page.keyPress(item.key);
-                break;
-              case "select":
-                await page.locator(item.target).selectOption(item.value);
-                break;
-              case "wait":
-                await page.waitForTimeout(Math.min(item.milliseconds, 10_000));
-                break;
-            }
-          }
-          return { url: await page.url(), title: await page.title() };
-        },
-        resolvedActions,
-        { timeout: 60_000 },
-      );
+      const result = await this.requireFacade().run(`${actionCode(resolvedActions)}
+return { url: await page.evaluate(() => location.href), title: await page.title() };`) as { url: string; title: string };
 
       await this.gateCaptcha();
       this.xpathMap = {};
@@ -460,13 +423,13 @@ export class BrowserSession {
       await this.start();
       await this.gateCaptcha();
       const started = performance.now();
-      const result = await this.requireStagehand().experimentalBatch(async ({ page }) => ({
-        data: await page.screenshot({ type: "png" }),
-        url: await page.url(),
-        title: await page.title(),
-      }));
+      const facade = this.requireFacade();
+      const image = await facade.screenshot({ type: "png" });
+      const result = await facade.run(
+        "return { url: await page.evaluate(() => location.href), title: await page.title() };",
+      ) as { url: string; title: string };
       await this.gateCaptcha();
-      const buffer = toBuffer(result.data);
+      const buffer = Buffer.from(image.data, "base64");
       this.state.screenshot = buffer;
       this.updateBrowserState(result.url, result.title);
       const url = result.url;
@@ -491,6 +454,8 @@ export class BrowserSession {
     const stagehand = this.stagehand;
     const browser = this.browser;
     this.stagehand = undefined;
+    this.facade = undefined;
+    this.xpathMap = {};
     this.browser = undefined;
     await stagehand?.close().catch(() => undefined);
     await browser?.close().catch(() => undefined);
@@ -548,7 +513,7 @@ export class BrowserSession {
   private resolveTarget(target: string): string {
     const raw = target.replace(/^\[/, "").replace(/\]$/, "");
     const xpath = this.xpathMap[target] ?? this.xpathMap[raw];
-    if (!xpath && /^\[?\d+\]?$/.test(target)) {
+    if (!xpath && /^\[?\d+(?:-\d+)*\]?$/.test(target)) {
       throw new Error("This snapshot ID is not in the latest snapshot. Call snapshot again.");
     }
     if (!xpath) return target;
@@ -558,6 +523,30 @@ export class BrowserSession {
   private requireStagehand(): Stagehand {
     if (!this.stagehand) throw new Error("The Stagehand client is not ready.");
     return this.stagehand;
+  }
+
+  private requireFacade(): StagehandFacadeTools {
+    return this.facade ??= new StagehandFacadeTools(this.requireStagehand(), {
+      keeperPage: false,
+      onCloseRequested: () => this.close(),
+    });
+  }
+
+  private async captureSnapshot(): Promise<{
+    snapshot: { formattedTree: string; xpathMap: Record<string, string> };
+    url: string;
+    title: string;
+  }> {
+    // Bell accepts both CSS selectors and snapshot IDs in one action batch, so
+    // retain the map and page metadata from the same capture.
+    return await this.requireFacade().run(`
+const snapshot = await page.accessibility.snapshot({ includeIframes: true });
+return { snapshot, url: await page.evaluate(() => location.href), title: await page.title() };
+`) as {
+      snapshot: { formattedTree: string; xpathMap: Record<string, string> };
+      url: string;
+      title: string;
+    };
   }
 
   private async acquireOperation(): Promise<() => void> {
@@ -605,6 +594,8 @@ export class BrowserSession {
           await this.stagehand?.close().catch(() => undefined);
           await this.browser?.close().catch(() => undefined);
           this.stagehand = undefined;
+          this.facade = undefined;
+          this.xpathMap = {};
           this.browser = undefined;
           if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500));
         }
@@ -641,6 +632,8 @@ export class BrowserSession {
         await this.stagehand?.close().catch(() => undefined);
         await launched?.close().catch(() => undefined);
         this.stagehand = undefined;
+        this.facade = undefined;
+        this.xpathMap = {};
         this.browser = undefined;
         if (launched?.sessionId) {
           this.remoteSessionId = launched.sessionId;
@@ -671,6 +664,8 @@ export class BrowserSession {
       await this.clearCaptchaSubscriptions();
       this.browser = browser;
       this.stagehand = stagehand;
+      this.facade = undefined;
+      this.xpathMap = {};
       await this.ensureCaptchaSubscriptions();
     } catch (error) {
       await browser.close().catch(() => undefined);
@@ -771,11 +766,7 @@ export class BrowserSession {
       throw new CaptchaHandoffError(this.captchaStatus);
     if (this.captchaNeedsObservation) {
       this.captchaNeedsObservation = false;
-      const result = await this.requireStagehand().experimentalBatch(async ({ page }) => ({
-        snapshot: await page.snapshot({ includeIframes: true }),
-        url: await page.url(),
-        title: await page.title(),
-      }));
+      const result = await this.captureSnapshot();
       this.xpathMap = result.snapshot.xpathMap;
       this.updateBrowserState(result.url, result.title);
       addTrace(
@@ -836,27 +827,40 @@ export class BrowserSession {
 }
 
 export function formatRunCode(actions: RunAction[]): string {
+  return actionCode(actions.map((item): RunAction => {
+    switch (item.action) {
+      case "goto": return { ...item, url: safeActivityUrl(item.url) };
+      case "fill":
+      case "type":
+      case "select": return { ...item, value: "[value hidden]" };
+      case "press": return { ...item, key: "[key hidden]" };
+      default: return item;
+    }
+  }));
+}
+
+function actionCode(actions: RunAction[]): string {
   return actions
     .flatMap((item) => {
       switch (item.action) {
         case "goto":
           return [
-            `await page.goto(${JSON.stringify(safeActivityUrl(item.url))});`,
-            'await page.waitForLoadState("domcontentloaded", 15_000);',
+            `await page.goto(${JSON.stringify(item.url)});`,
+            'await page.waitForLoadState("domcontentloaded", { timeout: 15_000 });',
           ];
         case "click":
           return `await page.locator(${JSON.stringify(item.target)}).click();`;
         case "fill":
-          return `await page.locator(${JSON.stringify(item.target)}).fill("[value hidden]");`;
+          return `await page.locator(${JSON.stringify(item.target)}).fill(${JSON.stringify(item.value)});`;
         case "type":
-          return `await page.locator(${JSON.stringify(item.target)}).type("[value hidden]");`;
+          return `await page.locator(${JSON.stringify(item.target)}).type(${JSON.stringify(item.value)});`;
         case "press":
           return [
             ...(item.target ? [`await page.locator(${JSON.stringify(item.target)}).click();`] : []),
-            'await page.keyPress("[key hidden]");',
+            `await page.keyboard.press(${JSON.stringify(item.key)});`,
           ];
         case "select":
-          return `await page.locator(${JSON.stringify(item.target)}).selectOption("[value hidden]");`;
+          return `await page.locator(${JSON.stringify(item.target)}).selectOption(${JSON.stringify(item.value)});`;
         case "wait":
           return `await page.waitForTimeout(${Math.min(item.milliseconds, 10_000)});`;
       }
@@ -970,21 +974,4 @@ function isLiveSourceUrl(url: string): boolean {
   const host = parsed.hostname;
   if (host.includes("google.")) return /^\/maps\/place\//.test(parsed.pathname);
   return !DISCOVERY_HOSTS.some((item) => host.includes(item));
-}
-
-function toBuffer(value: unknown): Buffer {
-  if (Buffer.isBuffer(value)) return value;
-  if (value instanceof Uint8Array) return Buffer.from(value);
-  if (Array.isArray(value) && value.every((item) => typeof item === "number")) {
-    return Buffer.from(value);
-  }
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    if (Array.isArray(record.data)) return Buffer.from(record.data as number[]);
-    const numericValues = Object.values(record);
-    if (numericValues.length && numericValues.every((item) => typeof item === "number")) {
-      return Buffer.from(numericValues as number[]);
-    }
-  }
-  throw new Error("Stagehand returned a screenshot in an unsupported byte format.");
 }

@@ -8,6 +8,7 @@ export default defineAgent({
       "@1password/sdk",
       "@browserbasehq/sdk",
       "@browserbasehq/stagehand",
+      "stagehand-middleware",
       "playwright-core",
       "pg",
     ],
