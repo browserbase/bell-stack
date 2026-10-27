@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "outDir": ".photon-worker",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": true,
+    "types": ["node"],
+    "incremental": false
+  },
+  "include": [
+    "server/photon/**/*.ts",
+    "scripts/photon-worker.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
