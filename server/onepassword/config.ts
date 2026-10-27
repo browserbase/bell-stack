@@ -2,6 +2,7 @@ import { ConnectionAuthorizationFailedError, type ConnectionPrincipal } from "ev
 import { z } from "zod";
 
 export const scopes = "brokered-credentials:request-access brokered-credentials:read";
+const PHOTON_PRINCIPAL_PATTERN = /^photon:[0-9a-f]{8,128}$/;
 export interface Config { origin: string; redirectUri: string; clientId: string; clientSecret: string; databaseUrl: string; encryptionKey: Buffer }
 export function failed(reason: string): never {
   throw new ConnectionAuthorizationFailedError("onepassword", { reason, retryable: false, message: `1Password: ${reason}.` });
@@ -11,7 +12,8 @@ export function requirePersonalConnections(): void {
   if (!personalConnectionsEnabled()) failed("personal_1password_disabled");
 }
 export function ownerOf(principal: ConnectionPrincipal): string {
-  if (principal.type !== "user" || principal.issuer !== "linq" || !/^linq:.{1,507}$/.test(principal.id)) return failed("authenticated_sender_required");
+  // Retired `linq:` owner rows stay orphaned; consent is fresh per Photon principal.
+  if (principal.type !== "user" || principal.issuer !== "photon" || !PHOTON_PRINCIPAL_PATTERN.test(principal.id)) return failed("authenticated_sender_required");
   return JSON.stringify([principal.issuer, principal.id]);
 }
 export function configuration(): Config {
