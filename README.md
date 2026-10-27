@@ -1,8 +1,8 @@
-# BELL
+# BELL · Photon
 
 <p align="center"> <img width="128" height="128" alt="BELL" src="https://github.com/user-attachments/assets/f4c9363d-2ab0-4205-a3c7-7d7ad61ec6c6"/></p>
 
-[BELL](https://www.browserbase.com/blog/bell-personal-assistant-stack) is a reference architecture and sample app for building personal AI assistants that execute tasks on your behalf.
+This Photon edition of [BELL](https://www.browserbase.com/blog/bell-personal-assistant-stack) is a reference architecture and sample app for building personal AI assistants that execute tasks on your behalf, with native iMessage powered by Photon.
 
 - Browserbase: Browser + Stagehand
 - Eve by Vercel: Agent Framework
@@ -17,8 +17,8 @@
 Requires Node.js 24, pnpm 10.33.4, and OpenAI and Browserbase API keys.
 
 ```sh
-git clone https://github.com/browserbase/bell-stack.git
-cd bell-stack
+git clone https://github.com/tecxbro/bell-stack-photon.git
+cd bell-stack-photon
 pnpm install --frozen-lockfile
 cp .env.example .env
 ```

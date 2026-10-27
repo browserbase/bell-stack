@@ -167,21 +167,20 @@ Worker tuning (all bounded with safe defaults): `BELL_PHOTON_LEASE_MS`,
 The token URL is derived as
 `https://spectrum.photon.codes/projects/{projectId}/imessage/tokens`.
 
-## Deployment, rollout and cutover
+## Deployment and rollout
 
-1. Apply `migrations/004_photon.sql`; the Photon tables are independent of the
-   Linq path.
-2. Deploy with `BELL_PHOTON_ENABLED` unset: the channel is inert and no LINQ\_\*
-   variable is consulted. The flags are independent, so source and cutover can
-   roll separately.
-3. Set the Photon environment, start the worker and confirm
-   `/internal/photon/health` shows a held lease and a live stream.
-4. Drain Linq traffic, then disable the Linq webhook. Keep
-   `BELL_PHOTON_INTERNAL_ORIGIN` and secret unchanged across the cutover so
-   durable deadlines, outbox commands and inbox cursors survive the restart.
-5. Rollback: unset `BELL_PHOTON_ENABLED`, re-enable the Linq webhook. Queued
-   Photon commands remain durable and retryable; nothing is lost by pausing
-   the worker.
+1. Apply `migrations/004_photon.sql` to create the durable Photon tables.
+2. Deploy with `BELL_PHOTON_ENABLED` unset to keep the messaging channel
+   disabled while preparing the Photon credentials and sender allowlist.
+3. Set the Photon environment, enable `BELL_PHOTON_ENABLED`, restart the app
+   and start the worker. Confirm `/internal/photon/health` shows a held lease
+   and a live stream.
+4. Keep `BELL_PHOTON_INTERNAL_ORIGIN` and the internal secret consistent
+   between the app and worker. Retain the database across restarts to preserve
+   outbox commands, inbox cursors and durable deadlines.
+5. To pause messaging, unset `BELL_PHOTON_ENABLED` and restart the app and
+   worker. Queued commands remain in the database; resuming processing still
+   respects their deadlines and reconciliation rules.
 
 ## Limitations
 

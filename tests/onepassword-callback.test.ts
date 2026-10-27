@@ -17,7 +17,7 @@ describe("personal 1Password boundaries", () => {
     const sender = "photon:" + "a".repeat(64);
     expect(() => ownerOf({ type: "app" })).toThrow();
     expect(() => ownerOf({ type: "user", issuer: "caller", id: sender })).toThrow();
-    expect(() => ownerOf({ type: "user", issuer: "linq", id: "linq:user" })).toThrow();
+    expect(() => ownerOf({ type: "user", issuer: "legacy", id: "legacy:user" })).toThrow();
     expect(ownerOf({ type: "user", issuer: "photon", id: sender })).toBe(`["photon","${sender}"]`);
   });
   it("requires an exact HTTPS callback and a canonical encryption key", () => {

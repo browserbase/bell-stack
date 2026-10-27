@@ -1,8 +1,7 @@
 /**
  * Photon channel environment contract. The Advanced gRPC channel parses only
- * `BELL_PHOTON_*`/`IMESSAGE_*`/`DATABASE_URL` settings — no LINQ_* variables
- * are needed anywhere — and fails closed with the variable named when the
- * environment cannot produce a safe configuration.
+ * `BELL_PHOTON_*`/`IMESSAGE_*`/`DATABASE_URL` settings and fails closed with
+ * the variable named when the environment cannot produce a safe configuration.
  */
 import { describe, expect, it } from "vitest";
 
@@ -45,15 +44,14 @@ describe("Photon channel environment", () => {
     });
   });
 
-  it("needs no LINQ_* variables in any mode", () => {
-    // The contract contains no Linq secret, webhook key, or API token at all.
+  it("ignores unrelated provider credentials and receiving numbers", () => {
     const env = { ...VALID };
     expect(loadPhotonConfig(env)).not.toBeNull();
     // Stray retired variables are ignored, never consulted for identity.
-    const withStrayLinq = { ...VALID, LINQ_API_KEY: "dead", LINQ_WEBHOOK_SECRET: "dead", BELL_LINQ_PHONE_NUMBER: "+1999" };
-    const config = loadPhotonConfig(withStrayLinq);
+    const withUnrelatedProvider = { ...VALID, LEGACY_API_KEY: "dead", LEGACY_WEBHOOK_SECRET: "dead", BELL_LEGACY_PHONE_NUMBER: "+1999" };
+    const config = loadPhotonConfig(withUnrelatedProvider);
     expect(config!.phoneNumber).toBe("+12025550100");
-    expect(JSON.stringify(config)).not.toMatch(/linq/i);
+    expect(config).toEqual(loadPhotonConfig(env));
   });
 
   it("returns null when disabled so builds run without provider credentials", () => {

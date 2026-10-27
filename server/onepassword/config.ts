@@ -13,7 +13,7 @@ export function requirePersonalConnections(): void {
   if (!personalConnectionsEnabled()) failed("personal_1password_disabled");
 }
 export function ownerOf(principal: ConnectionPrincipal): string {
-  // Retired `linq:` owner rows stay orphaned; consent is fresh per Photon principal.
+  // Retired provider owner rows stay orphaned; consent is fresh per Photon principal.
   if (!isVerifiedPhotonPrincipal(principal)) return failed("authenticated_sender_required");
   return JSON.stringify([principal.issuer, principal.id]);
 }

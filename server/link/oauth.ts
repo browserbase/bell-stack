@@ -27,7 +27,7 @@ function failed(reason: string): never {
 
 export function linkOwner(principal: ConnectionPrincipal): LinkOwner {
   // Photon principals are `photon:` + sha256 of the verified canonical handle
-  // tuple. Grants persisted under retired `linq:` owners stay orphaned: every
+  // tuple. Grants persisted under retired provider owners stay orphaned: every
   // wallet requires fresh consent under the new owner identity.
   if (!isVerifiedPhotonPrincipal(principal))
     return failed("principal_required");

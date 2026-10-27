@@ -32,7 +32,7 @@ describe("Link credential boundary", () => {
       { type: "user" as const, id: sender, issuer: "web" },
       { type: "user" as const, id: "", issuer: "photon" },
       { type: "user" as const, id: "photon:not-a-digest", issuer: "photon" },
-      { type: "user" as const, id: "linq:sender", issuer: "linq" },
+      { type: "user" as const, id: "legacy:sender", issuer: "legacy" },
     ]) {
       expect(() => linkOwner(principal)).toThrow();
       await expect(linkAuth.getToken({ principal, connection: { url: "" } })).rejects.toMatchObject({ reason: "principal_required" });

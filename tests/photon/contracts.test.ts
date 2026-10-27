@@ -106,7 +106,7 @@ describe("photonSessionAuth / isPhotonAuth", () => {
     expect(auth.principalId).toBe(photonPrincipalId("proj-1", phone()));
     expect(auth.subject).toBe("phone:+12025550123");
     expect(isPhotonAuth(auth)).toBe(true);
-    expect(isPhotonAuth({ authenticator: "linq-message", issuer: "linq" })).toBe(false);
+    expect(isPhotonAuth({ authenticator: "legacy-message", issuer: "legacy" })).toBe(false);
     expect(isPhotonAuth({ authenticator: PHOTON_AUTHENTICATOR, issuer: "other" })).toBe(false);
     expect(isPhotonAuth(null)).toBe(false);
   });

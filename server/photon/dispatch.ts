@@ -43,7 +43,7 @@ import { stableJson } from "./normalize.js";
  * durable intent so a crash mid-request resumes without duplicating.
  */
 
-/** Bell's maximum conversation lifetime preserved from the Linq channel. */
+/** Bell's maximum conversation lifetime. */
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 /** Deliveries that keep failing quarantine instead of spinning forever. */
 const MAX_INTENT_ATTEMPTS = 12;
