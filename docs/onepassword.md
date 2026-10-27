@@ -1,6 +1,6 @@
 # Personal 1Password through Bell
 
-This integration connects an allowlisted private Linq sender to their personal 1Password account. It uses Agentic Autofill in the 1Password browser extension. The operator SDK/CLI vault tools remain separate and are unavailable to Linq senders.
+This integration connects an allowlisted private Photon sender to their personal 1Password account. It uses Agentic Autofill in the 1Password browser extension. The operator SDK/CLI vault tools remain separate and are unavailable to Photon senders.
 
 ## Current status: disabled pending hosted extension support
 
@@ -32,7 +32,7 @@ Before changing the flag to `true`, the platform and SDK must support loading bo
 
 3. Register the OAuth client through a 1Password Business account. The connecting test user needs a separate US Individual or Families account and the supported desktop app/extension. Follow the current [Browserbase setup guide](https://docs.browserbase.com/integrations/1password/agentic-autofill) for partner access and extension packaging. A regular service-account token is not a replacement for this client or extension.
 4. Keep the public callback and `/eve/v1/connections/.../callback/...` paths reachable through Vercel protection without adding query parameters to the registered redirect. The callbacks use server-issued, short-lived capabilities; do not make unrelated application routes public.
-5. Keep Linq signature verification, receiving-line configuration, and the sender allowlist enabled. Groups are deliberately rejected. The web operator login does not establish an individual iMessage identity and cannot select someone else's personal account.
+5. Keep Photon line verification and the sender allowlist enabled. Groups are rejected unless explicitly allowlisted. The web operator login does not establish an individual iMessage identity and cannot select someone else's personal account.
 6. Start new conversations for the rollout. Remove `BROWSERBASE_CONTEXT_ID` when personal-browser mode is enabled. Bell disables reusable Context creation, selection, saving, and cookie export in this mode. Existing contexts are not deleted, and their cookies are not migrated into personal sessions. Disable the old `ONEPASSWORD_OAUTH_STATE_SECRET`; the new record encryption key replaces its use.
 
 Setting the extension upload ID changes browser launch configuration. Stagehand 4 also needs its own extension. Bell requires Stagehand initialization and the 1Password runtime API to succeed in the same session; failures stop the operation and do not fall back to reading passwords through the SDK. The local synthetic test verifies coexistence in Chrome. Verify the actual hosted extension combination before enabling this on a public deployment; an upload ID alone is not proof of compatibility.
@@ -49,7 +49,7 @@ The first implementation handles a single login per request and one pending requ
 
 ## Ownership and recovery
 
-The connection owner comes from Eve's signature-verified Linq principal, never a model argument or caller-supplied phone number. AES-GCM binds the encrypted record to that owner. The integration key is validated against the OAuth client, API host, account, and user path. A reconnect with an omitted key preserves the stored key and requires matching provider user identity. If identity cannot be established, Bell refuses to activate the connection.
+The connection owner comes from the verified Photon messaging principal, never a model argument or caller-supplied phone number. AES-GCM binds the encrypted record to that owner. The integration key is validated against the OAuth client, API host, account, and user path. A reconnect with an omitted key preserves the stored key and requires matching provider user identity. If identity cannot be established, Bell refuses to activate the connection.
 
 The callback captures the integration key from the fragment, posts it through a same-origin, browser-bound endpoint, saves it before code exchange, and clears the browser URL. Nothing stores the key in localStorage, sessionStorage, model output, or an environment variable. See [1Password's storage contract](https://www.1password.dev/agentic-autofill/partners/keys-and-tokens).
 

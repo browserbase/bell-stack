@@ -6,7 +6,7 @@ import { linkPrincipal } from "../lib/link-auth";
 import { isLinkSandbox } from "../../server/link/sandbox";
 
 export default defineTool({
-  description: "Disconnect this Linq sender's Link wallet and revoke its OAuth grant. If revocation fails, access stays blocked; retry this tool to finish disconnecting. This does not cancel merchant orders or subscriptions.",
+  description: "Disconnect this messaging sender's Link wallet and revoke its OAuth grant. If revocation fails, access stays blocked; retry this tool to finish disconnecting. This does not cancel merchant orders or subscriptions.",
   inputSchema: z.object({}),
   approval: always(),
   async execute(_input, ctx) {

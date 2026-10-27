@@ -7,7 +7,7 @@
 - Browserbase: Browser + Stagehand
 - Eve by Vercel: Agent Framework
 - Link by Stripe: Payments
-- Linq: Messaging Infrastruture
+- Photon: iMessage Infrastructure (Stable cloud, Advanced gRPC)
 - 1Password: Authentication
 - Baselayer: Identity 
 
@@ -36,8 +36,8 @@ pnpm dev
 | --- | --- | --- |
 | Browserbase + Stagehand | Browser sessions, automation, saved Contexts, and human handoff | [Browser runtime](docs/browser-runtime.md) |
 | Eve by Vercel | Agent configuration, tools, conversation state, and channels | [Eve in Bell](docs/repository.md#eve-by-vercel) |
-| Linq | iMessage and SMS through a signed webhook and sender allowlist | [Messaging setup](docs/linq.md) |
-| Link by Stripe | Wallet authorization, spend approval, and checkout through Linq | [Sandbox and wallet setup](docs/link.md) |
+| Photon | Native iMessage over a durable Advanced gRPC channel with a supervised transport worker | [Messaging setup](docs/photon.md) · [Capabilities](docs/photon-capabilities.md) |
+| Link by Stripe | Wallet authorization, spend approval, and checkout through Photon | [Sandbox and wallet setup](docs/link.md) |
 | 1Password | Operator credentials and OTP; personal Agentic Autofill is disabled by default | [Operator access](docs/browser-runtime.md#credentials-and-otp) · [Personal access status](docs/onepassword.md) |
 | Baselayer | Verified access to approved merchants using short-lived credentials | [Merchant access](docs/baselayer.md) |
 
