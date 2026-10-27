@@ -36,3 +36,24 @@ BELL_LIVE_CONTEXT=1 STAGEHAND_BROWSER=browserbase pnpm exec vitest run tests/bro
 This writes a synthetic example.com cookie, releases the writer, starts a reader with the
 same Context, and checks the restored cookie. It then releases both browsers and deletes the
 temporary Context. Cleanup failures must fail the check rather than silently leaving resources.
+
+## Photon channel (live provider)
+
+Live Photon checks need the real `IMESSAGE_PROJECT_ID`/`IMESSAGE_PROJECT_SECRET`, an
+enrolled dedicated line matching `BELL_PHOTON_PHONE_NUMBER`, a sender on
+`BELL_PHOTON_ALLOWED_SENDERS` with a designated test device, PostgreSQL, and the worker
+running against an isolated test World. With the environment loaded:
+
+1. Start `pnpm start:bell` and confirm `GET $BELL_PHOTON_INTERNAL_ORIGIN/internal/photon/health`
+   reports the worker alive with fresh stream beats.
+2. From the test device, text the line: the event lands in `bell_photon_inbox`, dispatches
+   to a new Eve session, and the reply appears through the outbox.
+3. Send an edit, unsend, reaction, and sticker; confirm they persist as `state_only`
+   projections and never start turns.
+4. Kill the worker mid-send, restart it, and confirm catch-up replays the gap and the
+   outbox does not double-send (provider receipts reconcile via `clientMessageId`).
+5. Run a live group check only against a GUID in `BELL_PHOTON_ALLOWED_GROUPS` with the
+   test membership enrolled.
+
+Provider acknowledgement is not device rendering — record observed device behavior in
+the release evidence, not just worker logs.
