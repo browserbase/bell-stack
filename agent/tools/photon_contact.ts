@@ -1,12 +1,13 @@
 import { defineTool, toolOutput } from "eve/tools";
 import { z } from "zod";
 
+import { sanitizeFileName } from "../../server/photon/filename.js";
 import {
-  enqueuePhotonCommand,
   photonScope,
+  queuePhotonCommand,
   resolveAttachmentGuid,
-  sanitizeFileName,
   uploadModelFile,
+  uploadPendingResponse,
 } from "../lib/photon-tools";
 
 const VCARD_MAX_BYTES = 64 * 1024;
@@ -52,14 +53,8 @@ export default defineTool({
   async execute(input, ctx) {
     const scope = await photonScope(ctx);
     switch (input.action) {
-      case "shareSelfCard": {
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "chats.shareContactInfo",
-          {},
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
+      case "shareSelfCard":
+        return queuePhotonCommand(scope, "chats.shareContactInfo", {});
       case "sendVCard": {
         assertValidVCard(input.vcard);
         const staged = await uploadModelFile(scope, {
@@ -72,25 +67,14 @@ export default defineTool({
           { artifactId: staged.artifactId },
           ctx.abortSignal,
         );
-        if (!resolved.resolved) {
-          const receipt = resolved.receipt;
-          return {
-            status: receipt.status,
-            commandId: receipt.commandId,
-            stage: "upload",
-            detail:
-              receipt.status === "pending" || receipt.status === "ambiguous"
-                ? "The contact-card upload is still in flight. Retry once it is acknowledged."
-                : "The contact-card upload did not complete.",
-          };
-        }
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
+        if (!resolved.resolved)
+          return uploadPendingResponse(resolved.receipt, "contact-card");
+        return queuePhotonCommand(
           scope,
           "messages.sendAttachment",
           { attachmentGuid: resolved.attachmentGuid },
           { dependsOn: resolved.dependsOn },
         );
-        return { status: "queued", commandId, deduplicated };
       }
     }
   },

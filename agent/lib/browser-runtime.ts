@@ -10,21 +10,18 @@ import {
   selectAgentContext,
 } from "../../server/browser/agent-contexts.js";
 import { BrowserSession, CaptchaHandoffError } from "../../server/browser/browser-session.js";
-import { getContextMetadataStore } from "../../server/browser/context-metadata-store.js";
+import { getContextMetadataStore, isOwnedGroupContext } from "../../server/browser/context-metadata-store.js";
 import { withBrowserPrivacyLock } from "../../server/browser/privacy-lock";
 import type { BrowserProxyLocation, ConversationState, TraceEvent } from "../../server/browser/types.js";
-import { photonEnabled } from "../../server/photon/config.js";
-import {
-  createPhotonStore,
-  type ConversationRow,
-  type PhotonStore,
-} from "../../server/photon/store.js";
 import type { ToolContext } from "eve/tools";
 import { runWithCancellation } from "./cancellation";
 import {
-  verifiedMessagingPrincipal,
-  type MessagingAudience,
-} from "./messaging-auth";
+  browserScope,
+  cancellationClosesBrowser,
+  resolveGroupBinding,
+  type BrowserScope,
+  type GroupBrowserBinding,
+} from "./group-binding";
 import {
   applyCaptchaTransition,
   closeTaskBrowser,
@@ -38,29 +35,7 @@ import {
 
 type BrowserOperation<T> = (browser: BrowserSession) => Promise<T>;
 
-/**
- * Who may drive a group browser task. Derived from the verified messaging
- * principal of the current tool call; `audience` is the durable
- * conversation scope and `ownerId` the verified `photon:` principal id.
- * Sessions with no verified principal (web, eve, operator) carry no scope
- * and keep the existing shared behavior.
- */
-export interface BrowserScope {
-  readonly audience: MessagingAudience;
-  readonly ownerId: string;
-  readonly bindingId?: string;
-}
-
-/** Derives the browser scope for a tool call, or `undefined` for non-messaging sessions. */
-export function browserScope(ctx: Pick<ToolContext, "session">): BrowserScope | undefined {
-  const verified = verifiedMessagingPrincipal(ctx.session.auth?.current);
-  if (!verified) return undefined;
-  return {
-    audience: verified.audience,
-    ownerId: verified.principal.id,
-    bindingId: verified.bindingId,
-  };
-}
+export { browserScope, type BrowserScope } from "./group-binding";
 
 /**
  * A session id or the tool context itself. Passing `ctx` is the preferred
@@ -101,118 +76,8 @@ const runtimes = new Map<string, BrowserRuntime>();
 const runtimeBuilds = new Map<string, Promise<unknown>>();
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1_000;
 
-/* ------------------------------------------------------------------ */
-/* Group-session isolation                                             */
-/* ------------------------------------------------------------------ */
-
-let photonStore: PhotonStore | undefined;
-
-/**
- * The durable conversation lookup is only needed (and only configured) when
- * the Photon channel is enabled. Web/eve/operator sessions never query it.
- */
-function conversationStore(): PhotonStore | undefined {
-  if (!photonEnabled() || !process.env.DATABASE_URL) return undefined;
-  return (photonStore ??= createPhotonStore(process.env.DATABASE_URL));
-}
-
-async function findConversation(sessionId: string): Promise<ConversationRow | undefined> {
-  const store = conversationStore();
-  if (!store) return undefined;
-  try {
-    return await store.findConversationBySession(sessionId);
-  } catch (error) {
-    console.error(JSON.stringify({ event: "browser.group.conversation_lookup_failed", error: String(error) }));
-    return undefined;
-  }
-}
-
-/** A pending credential/human step that a membership bump must not silently complete. */
-function pendingSensitiveStep(): boolean {
-  const record = taskState.get();
-  return record.status === "waiting_for_user" || record.status === "solving_captcha";
-}
-
-interface GroupBrowserBinding {
-  ownerId: string;
-  bindingId?: string;
-  membershipVersion?: number;
-}
-
-/**
- * Resolves whether this session's browser work belongs to a group member and
- * enforces the group contract:
- *
- * - Only a verified group principal may drive a group-bound session.
- * - The owner is `conversation.initiatingPrincipal` when the durable
- *   conversation provides it, else the first verified member to start browser
- *   work. A different member can never take over, snapshot or release it.
- * - A conversation membershipVersion bump since the task bound makes pending
- *   sensitive approvals stale: they fail and must be re-asserted.
- *
- * Returns the binding for group sessions, `undefined` for everything else.
- */
-async function resolveGroupBinding(
-  sessionId: string,
-  scope?: BrowserScope,
-): Promise<GroupBrowserBinding | undefined> {
-  const metadata = getContextMetadataStore();
-  const persisted = await metadata.groupBrowserTask(sessionId);
-  // Consult the durable conversation whenever we have a group signal, and once
-  // opportunistically per runtime so a group session's first unscoped call is
-  // still detected before a shared runtime can be created.
-  const conversation =
-    scope?.audience === "group" || persisted || !runtimes.has(sessionId)
-      ? await findConversation(sessionId)
-      : undefined;
-  const isGroup =
-    scope?.audience === "group" || persisted !== undefined || conversation?.scope === "group";
-  if (!isGroup) return undefined;
-
-  if (scope?.audience !== "group")
-    throw new Error("This browser task belongs to a group member. Continue it from the verified group conversation.");
-  const ownerId = conversation?.initiatingPrincipal ?? persisted?.ownerId ?? scope.ownerId;
-  if (scope.ownerId !== ownerId)
-    throw new Error("Only the person who started this browser task may use it.");
-
-  if (
-    conversation && persisted?.membershipVersion !== undefined
-    && conversation.membershipVersion !== persisted.membershipVersion
-  ) {
-    await metadata.bindGroupBrowserTask(sessionId, {
-      ownerId,
-      bindingId: conversation.bindingId,
-      membershipVersion: conversation.membershipVersion,
-    });
-    if (pendingSensitiveStep())
-      throw new Error("The group membership changed. The person who started this browser task must restart the pending step.");
-  } else if (
-    !persisted || persisted.ownerId !== ownerId
-    || (conversation !== undefined && persisted.membershipVersion !== conversation.membershipVersion)
-  ) {
-    await metadata.bindGroupBrowserTask(sessionId, {
-      ownerId,
-      bindingId: conversation?.bindingId ?? persisted?.bindingId ?? scope.bindingId,
-      membershipVersion: conversation?.membershipVersion,
-    });
-  }
-  return {
-    ownerId,
-    bindingId: conversation?.bindingId ?? persisted?.bindingId ?? scope.bindingId,
-    membershipVersion: conversation?.membershipVersion ?? persisted?.membershipVersion,
-  };
-}
-
-/** Whether a caller's cancellation may close a group-bound browser task. */
-async function cancellationClosesBrowser(sessionId: string, scope?: BrowserScope): Promise<boolean> {
-  const persisted = await getContextMetadataStore().groupBrowserTask(sessionId);
-  const conversation = persisted || scope?.audience === "group" ? await findConversation(sessionId) : undefined;
-  const isGroup = persisted !== undefined || conversation?.scope === "group" || scope?.audience === "group";
-  if (!isGroup) return true;
-  const ownerId = conversation?.initiatingPrincipal ?? persisted?.ownerId;
-  // With no bound owner there is no task to protect yet.
-  return !ownerId || (scope?.audience === "group" && scope.ownerId === ownerId);
-}
+/** Group binding/staleness rules live in agent/lib/group-binding.ts. */
+const hasRuntime = (sessionId: string): boolean => runtimes.has(sessionId);
 
 /* ------------------------------------------------------------------ */
 /* Launch serialization + isolated environment                          */
@@ -227,30 +92,7 @@ async function cancellationClosesBrowser(sessionId: string, scope?: BrowserScope
 const ISOLATED_BROWSER_ENV = ["BROWSERBASE_CONTEXT_ID", "BROWSERBASE_1PASSWORD_EXTENSION_ID"] as const;
 let browserLaunchQueue: Promise<unknown> = Promise.resolve();
 
-function launchBrowser(browser: BrowserSession, isolated: boolean): Promise<void> {
-  const launch = browserLaunchQueue.then(async () => {
-    if (!isolated) return browser.start();
-    const saved = ISOLATED_BROWSER_ENV.map((name) => [name, process.env[name]] as const);
-    for (const [name] of saved) delete process.env[name];
-    try {
-      return await browser.start();
-    } finally {
-      for (const [name, value] of saved) {
-        if (value === undefined) delete process.env[name];
-        else process.env[name] = value;
-      }
-    }
-  });
-  browserLaunchQueue = launch.then(
-    () => undefined,
-    () => undefined,
-  );
-  return launch;
-}
-
-/** Synchronous mask for task-state projection paths that read env fallbacks. */
-function withIsolatedEnv<T>(runtime: BrowserRuntime, operation: () => T): T {
-  if (runtime.isolatedOwnerId === undefined) return operation();
+function withMaskedBrowserEnv<T>(operation: () => T): T {
   const saved = ISOLATED_BROWSER_ENV.map((name) => [name, process.env[name]] as const);
   for (const [name] of saved) delete process.env[name];
   try {
@@ -261,6 +103,41 @@ function withIsolatedEnv<T>(runtime: BrowserRuntime, operation: () => T): T {
       else process.env[name] = value;
     }
   }
+}
+
+function launchIsolatedBrowser(start: () => Promise<void>): Promise<void> {
+  const launch = browserLaunchQueue.then(() => withMaskedBrowserEnv(start));
+  browserLaunchQueue = launch.then(
+    () => undefined,
+    () => undefined,
+  );
+  return launch;
+}
+
+/** Synchronous mask for task-state projection paths that read env fallbacks. */
+function withIsolatedEnv<T>(runtime: BrowserRuntime, operation: () => T): T {
+  return runtime.isolatedOwnerId === undefined ? operation() : withMaskedBrowserEnv(operation);
+}
+
+function createInitialState(
+  sessionId: string,
+  durable: ReturnType<typeof taskState.get>,
+  contextId = durable.browser.contextId,
+): ConversationState {
+  return {
+    id: sessionId,
+    traces: [],
+    browser: {
+      provider: durable.browser.sessionId ? "browserbase" : "not-started",
+      status: "idle",
+      contextId,
+      contextStatus: durable.browser.contextStatus,
+      proxyLocation: durable.browser.proxyLocation,
+      sessionId: durable.browser.sessionId,
+      url: durable.browser.url,
+      title: durable.browser.title,
+    },
+  };
 }
 
 function buildRuntime(sessionId: string, state: ConversationState): BrowserRuntime {
@@ -280,31 +157,33 @@ function buildIsolatedRuntime(
   state: ConversationState,
   ownerId: string,
 ): BrowserRuntime {
-  const runtime: BrowserRuntime = {
+  const browser = new BrowserSession(state, {
+    // Never inherit a shared/saved Context. A persisted Context id is honored
+    // only after it is confirmed as this session's own isolated draft — that
+    // check runs in ensureRuntime below.
+    contextId: state.browser.contextId,
+    proxyLocation: state.browser.proxyLocation,
+    captcha: taskState.get().captcha,
+    ensureContext: async (currentContextId) => {
+      if (currentContextId) {
+        // The isolated Context id was restored or created by this runtime;
+        // reuse it for the life of this task. Never consult env fallbacks.
+        return { id: currentContextId, status: "draft" as const };
+      }
+      const context = await createIsolatedAgentContext(sessionId, ownerId);
+      state.browser.contextId = context.id;
+      state.browser.contextStatus = "draft";
+      taskState.update((current) => recordTaskBrowserContext(current, context.id, "draft"));
+      return { id: context.id, status: "draft" as const };
+    },
+  });
+  const start = browser.start.bind(browser);
+  browser.start = () => launchIsolatedBrowser(start);
+  return {
     state,
     isolatedOwnerId: ownerId,
-    browser: new BrowserSession(state, {
-      // Never inherit a shared/saved Context. A persisted Context id is honored
-      // only after it is confirmed as this session's own isolated draft — that
-      // check runs in ensureIsolatedContext below.
-      contextId: state.browser.contextId,
-      proxyLocation: state.browser.proxyLocation,
-      captcha: taskState.get().captcha,
-      ensureContext: async (currentContextId) => {
-        if (currentContextId) {
-          // The isolated Context id was restored or created by this runtime;
-          // reuse it for the life of this task. Never consult env fallbacks.
-          return { id: currentContextId, status: "draft" as const };
-        }
-        const context = await createIsolatedAgentContext(sessionId, ownerId);
-        state.browser.contextId = context.id;
-        state.browser.contextStatus = "draft";
-        taskState.update((current) => recordTaskBrowserContext(current, context.id, "draft"));
-        return { id: context.id, status: "draft" as const };
-      },
-    }),
+    browser,
   };
-  return runtime;
 }
 
 /**
@@ -333,22 +212,9 @@ async function ensureRuntime(sessionId: string, group?: GroupBrowserBinding): Pr
       // Restore a Context only when the metadata row proves it is this
       // session's own isolated group draft — never a shared or personal one.
       const row = contextId ? (await getContextMetadataStore().read()).contexts[contextId] : undefined;
-      if (row?.audience !== "group" || row.ownerSessionId !== sessionId) contextId = undefined;
+      if (!isOwnedGroupContext(row, sessionId)) contextId = undefined;
     }
-    const state: ConversationState = {
-      id: sessionId,
-      traces: [],
-      browser: {
-        provider: durable.browser.sessionId ? "browserbase" : "not-started",
-        status: "idle",
-        contextId,
-        contextStatus: durable.browser.contextStatus,
-        proxyLocation: durable.browser.proxyLocation,
-        sessionId: durable.browser.sessionId,
-        url: durable.browser.url,
-        title: durable.browser.title,
-      },
-    };
+    const state = createInitialState(sessionId, durable, contextId);
     const runtime = group
       ? buildIsolatedRuntime(sessionId, state, group.ownerId)
       : buildRuntime(sessionId, state);
@@ -372,21 +238,7 @@ function getRuntime(sessionId: string): BrowserRuntime {
   const saved = taskState.get();
   const durable = reconcileCaptchaAfterRestart(saved, new Date().toISOString());
   if (durable !== saved) taskState.update(() => durable);
-  const state: ConversationState = {
-    id: sessionId,
-    traces: [],
-    browser: {
-      provider: durable.browser.sessionId ? "browserbase" : "not-started",
-      status: "idle",
-      contextId: durable.browser.contextId,
-      contextStatus: durable.browser.contextStatus,
-      proxyLocation: durable.browser.proxyLocation,
-      sessionId: durable.browser.sessionId,
-      url: durable.browser.url,
-      title: durable.browser.title,
-    },
-  };
-  const runtime = buildRuntime(sessionId, state);
+  const runtime = buildRuntime(sessionId, createInitialState(sessionId, durable));
   runtimes.set(sessionId, runtime);
   return runtime;
 }
@@ -398,7 +250,7 @@ export async function runBrowserOperation<T>(
   scope?: BrowserScope,
 ): Promise<BrowserToolOutput<T>> {
   const resolved = resolveBrowserTarget(target, scope);
-  const group = await resolveGroupBinding(resolved.sessionId, resolved.scope);
+  const group = await resolveGroupBinding(resolved.sessionId, resolved.scope, hasRuntime);
   if (group)
     // Group tasks skip the personal-1Password and payment-privacy locks: every
     // credential path is denied upstream, and no shared lock state may attach.
@@ -410,9 +262,6 @@ export async function runBrowserOperation<T>(
 
 async function runBrowserOperationUnlocked<T>(sessionId: string, operation: BrowserOperation<T>, includeScreenshot: boolean, group?: GroupBrowserBinding): Promise<BrowserToolOutput<T>> {
   const runtime = await ensureRuntime(sessionId, group);
-  // Isolated group launches run serialized under the env mask so they can
-  // never inherit BROWSERBASE_CONTEXT_ID or personal extension settings.
-  await launchBrowser(runtime.browser, runtime.isolatedOwnerId !== undefined);
   scheduleIdleClose(sessionId, runtime);
   const traceStart = runtime.state.traces.length;
   let settled = false;
@@ -546,7 +395,7 @@ export function resumeBrowserAfterHumanInput(sessionId: string): void {
 
 /** Reusable Context storage is shared — group sessions may never reach it. */
 async function assertSharedContextsAllowed(sessionId: string, scope?: BrowserScope): Promise<void> {
-  if (await resolveGroupBinding(sessionId, scope))
+  if (await resolveGroupBinding(sessionId, scope, hasRuntime))
     throw new Error("Reusable browser Contexts are not available in a group conversation.");
 }
 
@@ -585,7 +434,7 @@ export async function createBrowserContext(
     runtime?.browser.hasStarted() || runtime?.state.browser.sessionId,
   );
   signal?.throwIfAborted();
-  if (hasExistingBrowser) await launchBrowser(runtime!.browser, false);
+  if (hasExistingBrowser) await runtime!.browser.start();
   signal?.throwIfAborted();
   const cookies = hasExistingBrowser ? await runtime!.browser.exportCookies() : [];
   signal?.throwIfAborted();

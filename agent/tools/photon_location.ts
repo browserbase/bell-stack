@@ -1,16 +1,13 @@
 import { defineTool, toolOutput } from "eve/tools";
 import { z } from "zod";
 
+import type { SharedFriendLocation } from "../../server/photon/contracts.js";
 import {
-  asArray,
-  asBoolean,
-  asNumber,
-  asRecord,
-  asString,
   assertPrivateAudience,
-  awaitCommandResult,
-  enqueuePhotonCommand,
+  isoTimestamp,
   photonScope,
+  queuePhotonCommand,
+  runPhotonCommand,
 } from "../lib/photon-tools";
 
 const address = z.string().min(3).max(320);
@@ -29,24 +26,22 @@ const inputSchema = z.discriminatedUnion("action", [
 ]);
 
 /** Compact projection of a SharedFriendLocation snapshot. */
-function projectLocation(value: unknown): Record<string, unknown> | undefined {
-  const location = asRecord(value);
+function projectLocation(
+  location: SharedFriendLocation | undefined,
+): Record<string, unknown> | undefined {
   if (!location) return undefined;
-  const timestamp = location.locationTimestamp;
-  const expires = location.expiresAt;
   return {
-    address: asString(location.address),
-    name: asString(location.name),
-    latitude: asNumber(location.latitude),
-    longitude: asNumber(location.longitude),
-    accuracy: asNumber(location.accuracy),
-    locationType: asString(location.locationType),
-    isLocatingInProgress: asBoolean(location.isLocatingInProgress),
-    locationTimestamp:
-      timestamp instanceof Date ? timestamp.toISOString() : asString(timestamp),
-    expiresAt: expires instanceof Date ? expires.toISOString() : asString(expires),
-    longAddress: asString(location.longAddress),
-    shortAddress: asString(location.shortAddress),
+    address: location.address,
+    name: location.name,
+    latitude: location.latitude,
+    longitude: location.longitude,
+    accuracy: location.accuracy,
+    locationType: location.locationType,
+    isLocatingInProgress: location.isLocatingInProgress,
+    locationTimestamp: isoTimestamp(location.locationTimestamp),
+    expiresAt: isoTimestamp(location.expiresAt),
+    longAddress: location.longAddress,
+    shortAddress: location.shortAddress,
   };
 }
 
@@ -59,58 +54,61 @@ export default defineTool({
     const scope = await photonScope(ctx);
     switch (input.action) {
       case "request": {
-        const { commandId } = await enqueuePhotonCommand(scope, "locations.request", {
-          address: input.address,
-        });
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
-        const record = asRecord(receipt.status === "acknowledged" ? receipt.result : undefined);
+        const receipt = await runPhotonCommand(
+          scope,
+          "locations.request",
+          { address: input.address },
+          ctx.abortSignal,
+        );
+        const result = receipt.status === "acknowledged" ? receipt.result : undefined;
         return {
           status: receipt.status,
-          commandId,
+          commandId: receipt.commandId,
           request:
-            record === undefined
+            result === undefined
               ? undefined
               : {
-                  status: asString(record.status),
-                  reason: asString(record.reason),
-                  messageGuid: asString(record.messageGuid),
-                  address: asString(record.address),
+                  status: result.status,
+                  reason: result.reason,
+                  messageGuid: result.messageGuid,
+                  address: result.address,
                 },
           note: "A successful request is not acceptance of location sharing.",
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };
       }
       case "list": {
-        const { commandId } = await enqueuePhotonCommand(scope, "locations.list", {});
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
-        const raw = receipt.status === "acknowledged" ? receipt.result : undefined;
-        const locations = Array.isArray(raw) ? raw : asArray(asRecord(raw)?.locations);
+        const receipt = await runPhotonCommand(scope, "locations.list", {}, ctx.abortSignal);
+        const locations =
+          receipt.status === "acknowledged" ? [...(receipt.result?.locations ?? [])] : [];
         return {
           status: receipt.status,
-          commandId,
+          commandId: receipt.commandId,
           locations: locations.map(projectLocation).filter((entry) => entry !== undefined),
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };
       }
       case "get": {
-        const { commandId } = await enqueuePhotonCommand(scope, "locations.get", {
-          address: input.address,
-        });
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
+        const receipt = await runPhotonCommand(
+          scope,
+          "locations.get",
+          { address: input.address },
+          ctx.abortSignal,
+        );
+        const result = receipt.status === "acknowledged" ? receipt.result : undefined;
         return {
           status: receipt.status,
-          commandId,
-          location: receipt.status === "acknowledged" ? projectLocation(receipt.result) : undefined,
+          commandId: receipt.commandId,
+          found: result?.found,
+          location: result?.found === true ? projectLocation(result.location) : undefined,
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };
       }
-      case "watch": {
-        const { commandId, deduplicated } = await enqueuePhotonCommand(scope, "locations.watch", {
+      case "watch":
+        return queuePhotonCommand(scope, "locations.watch", {
           action: input.watchAction,
           address: input.address,
         });
-        return { status: "queued", commandId, deduplicated };
-      }
     }
   },
   toModelOutput(output) {

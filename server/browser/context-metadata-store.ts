@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -34,6 +35,29 @@ const metadataSchema = z.object({
 
 export type ContextMetadataFile = z.infer<typeof metadataSchema>;
 
+/**
+ * Whether a stored Context row may be reused outside the task that owns it.
+ * Group-isolated rows are the only non-reusable audience; drafts remain
+ * reusable by their owning session until expiry.
+ */
+export function isReusableContext(
+  row: ContextMetadataFile["contexts"][string] | undefined,
+): boolean {
+  return row?.audience !== "group";
+}
+
+/**
+ * Whether a stored Context row is the group-isolated Context owned by this
+ * session — the restore/release guard; a foreign or shared Context never
+ * satisfies it.
+ */
+export function isOwnedGroupContext(
+  row: ContextMetadataFile["contexts"][string] | undefined,
+  ownerSessionId: string,
+): boolean {
+  return row?.audience === "group" && row.ownerSessionId === ownerSessionId;
+}
+
 // All instances in this process share the read/modify/write queue for a path.
 const pendingWrites = new Map<string, Promise<void>>();
 
@@ -57,6 +81,33 @@ export class ContextMetadataStore {
     } catch (error) {
       throw new Error("Browser context metadata is invalid; refusing to overwrite it.", { cause: error });
     }
+  }
+
+  /**
+   * Every Context a caller may list, select or promote — group-isolated and
+   * draft rows are excluded so call sites never re-test the invariant.
+   */
+  async listReusable(): Promise<ContextMetadataFile> {
+    const local = await this.read();
+    return {
+      ...local,
+      contexts: Object.fromEntries(
+        Object.entries(local.contexts).filter(
+          ([, row]) => row.audience !== "group" && row.status !== "draft",
+        ),
+      ),
+    };
+  }
+
+  /**
+   * The row for `id`, throwing when it is group-isolated — guards that must
+   * never proceed against a foreign group task's Context share this check.
+   */
+  async assertReusable(id: string): Promise<ContextMetadataFile["contexts"][string] | undefined> {
+    const row = (await this.read()).contexts[id];
+    if (row?.audience === "group")
+      throw new Error("This Context belongs to an isolated group task.");
+    return row;
   }
 
   async add(id: string, name: string, now = new Date()): Promise<void> {
@@ -132,6 +183,7 @@ export class ContextMetadataStore {
   async groupBrowserTask(
     sessionId: string,
   ): Promise<NonNullable<ContextMetadataFile["groupBrowserTasks"]>[string] | undefined> {
+    if (!existsSync(this.filePath)) return undefined;
     return (await this.read()).groupBrowserTasks?.[sessionId];
   }
 

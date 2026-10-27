@@ -28,19 +28,23 @@ import {
 } from "../../server/photon/contracts.js";
 import {
   bindingIdFor,
-  canonicalJson,
+  canonicalTupleJson,
   dispatchKeyFor,
   eveAddressFor,
   handleKey,
+  intentIdFor,
   isPhotonAuth,
-  normalizeHandle,
   photonPrincipalId,
   sha256Hex,
   type CanonicalHandle,
 } from "../../server/photon/identity.js";
-import { admitEvent, type ConversationState } from "../../server/photon/policy.js";
 import {
-  createPhotonStore,
+  admitEvent,
+  applyMembershipDelta,
+  classifyScope,
+  toConversationState,
+} from "../../server/photon/policy.js";
+import {
   type ConversationRow,
   type InboxRow,
   type InteractionRow,
@@ -62,7 +66,8 @@ import {
   verifyInternalAuth,
   type PhotonChannelContext,
 } from "../lib/photon";
-import { enrollDeadlineOnDispatch, isSessionExpired } from "../lib/session-lifetime";
+import { getPhotonStore } from "../lib/photon-store";
+import { isSessionExpired, registerSessionDeadline } from "../lib/session-lifetime";
 
 /**
  * Bell's raw Advanced gRPC channel. All routes are private: they mount
@@ -93,7 +98,7 @@ function photonRuntime(): PhotonRuntime | null {
   const config = loadPhotonConfig();
   if (!config) return null;
   if (cachedRuntime?.config.databaseUrl === config.databaseUrl) return cachedRuntime;
-  cachedRuntime = { config, store: createPhotonStore(config.databaseUrl) };
+  cachedRuntime = { config, store: getPhotonStore(config) };
   return cachedRuntime;
 }
 
@@ -140,21 +145,6 @@ function routePrelude(
   return { runtime };
 }
 
-function conversationState(
-  row: ConversationRow | undefined,
-  scope: "direct" | "group",
-): ConversationState {
-  return {
-    bindingId: row?.bindingId,
-    scope: row?.scope ?? scope,
-    generation: row?.generation ?? 1,
-    membership: row?.membership ?? [],
-    membershipVersion: row?.membershipVersion ?? 0,
-    initiatingPrincipal: row?.initiatingPrincipal,
-    retiredAt: row?.retiredAt,
-  };
-}
-
 /**
  * Applies a state-only event to the local projection without starting a
  * model turn. Membership deltas apply only onto a populated baseline — an
@@ -179,17 +169,9 @@ async function applyProjectionState(
         sequence: envelope.sequence,
       });
     }
-    if (updatesMembership && conversation && conversation.membership.length > 0
-      && (event.type === "participantAdded" || event.type === "participantRemoved"
-        || event.type === "participantLeft")) {
-      const participant = normalizeHandle(event.participant?.address);
-      if (participant) {
-        const key = handleKey(participant);
-        const membership = event.type === "participantAdded"
-          ? [...new Set([...conversation.membership, key])]
-          : conversation.membership.filter((member) => member !== key);
-        await store.updateMembership(conversation.bindingId, membership);
-      }
+    if (updatesMembership && conversation && conversation.membership.length > 0) {
+      const next = applyMembershipDelta(conversation.membership, event);
+      if (next) await store.updateMembership(conversation.bindingId, next);
     }
   }
   if (event.family === "message" && event.type === "unsent") {
@@ -345,13 +327,13 @@ async function dispatchInboxRow(
   const envelope = row.envelope;
   const chatGuid = envelope.chatGuid ?? row.chatGuid;
   const existing = chatGuid ? await store.getConversation(row.sourceId, chatGuid) : undefined;
-  const derivedScope = chatGuid && runtime.config.allowedGroups.includes(chatGuid) ? "group" : "direct";
+  const derivedScope = classifyScope(runtime.config, existing, chatGuid);
 
   // Defense in depth: admission is re-verified against current conversation
   // state even though the worker pre-adjudicated the row. A fresh denial
   // rejects; either side saying state-only applies projection state without
   // a model turn; only an admitted row on both checks dispatches.
-  const decision = admitEvent(runtime.config, envelope, conversationState(existing, derivedScope));
+  const decision = admitEvent(runtime.config, envelope, toConversationState(existing, derivedScope));
   if (decision.disposition === "state_only" || row.disposition === "state_only") {
     await applyProjectionState(store, row, envelope, decision.updatesMembership === true, existing);
     await store.markInboxProcessing(inboxId, "settled");
@@ -430,14 +412,14 @@ async function dispatchInboxRow(
       deliveryId: sibling.deliveryId,
     } satisfies PhotonDispatchResult);
   const intent = await store.upsertIntent({
-    intentId: `intent:${sha256Hex(dispatchKey)}`,
+    intentId: intentIdFor(dispatchKey),
     sourceId: row.sourceId,
     logEpoch: row.logEpoch,
     sequence: row.sequence,
     action,
     eveSessionId: sessionId,
     dispatchKey,
-    inputDigest: sha256Hex(canonicalJson(
+    inputDigest: sha256Hex(canonicalTupleJson(
       respondCandidate ? ["respond", respondCandidate.response] : ["send", text],
     )),
   });
@@ -485,7 +467,7 @@ async function dispatchInboxRow(
     });
     // The absolute 24h deadline starts at the first durably accepted turn;
     // the insert is a no-op once registered so retries never extend it.
-    await enrollDeadlineOnDispatch(store, sessionId, bound.bindingId);
+    await registerSessionDeadline(store, sessionId, bound.bindingId);
     await store.markInboxProcessing(inboxId, "dispatched");
     await store.touchConversation(bound.bindingId);
     return json({ status: "dispatched", sessionId, deliveryId: result.deliveryId } satisfies PhotonDispatchResult);
@@ -604,28 +586,13 @@ async function handleHealth(req: Request): Promise<Response> {
 }
 
 async function photonHealth(runtime: PhotonRuntime): Promise<Response> {
-  const sources = await runtime.store.pool.query<{
-    source_id: string;
-    status: string;
-    lease_epoch: string;
-    lease_expires_at: Date | null;
-    capture_cursor: string | null;
-    health: Record<string, unknown>;
-  }>(
-    `SELECT source_id, status, lease_epoch, lease_expires_at, capture_cursor, health
-       FROM bell_photon_sources
-      WHERE project_id = $1
-      ORDER BY updated_at DESC
-      LIMIT 1`,
-    [runtime.config.projectId],
-  );
-  const source = sources.rows[0];
+  const source = await runtime.store.getLatestSource(runtime.config.projectId);
   if (!source) return json({ ok: false } satisfies PhotonHealthReport);
   const [inbox, commands] = await Promise.all([
-    runtime.store.inboxStats(source.source_id),
-    runtime.store.commandStats(source.source_id),
+    runtime.store.inboxStats(source.sourceId),
+    runtime.store.commandStats(source.sourceId),
   ]);
-  const leaseExpiresAt = source.lease_expires_at?.toISOString();
+  const leaseExpiresAt = source.leaseExpiresAt?.toISOString();
   const rawStreams = source.health && typeof source.health === "object"
     ? source.health["streams"] : undefined;
   const streams = rawStreams && typeof rawStreams === "object" && !Array.isArray(rawStreams)
@@ -636,10 +603,10 @@ async function photonHealth(runtime: PhotonRuntime): Promise<Response> {
     ok: alive,
     worker: {
       alive,
-      leaseEpoch: Number(source.lease_epoch),
+      leaseEpoch: source.leaseEpoch,
       leaseExpiresAt,
       streams,
-      captureCursor: source.capture_cursor ?? undefined,
+      captureCursor: source.captureCursor ?? undefined,
       inboxLagSeconds: inbox.oldestPendingAgeSec ?? undefined,
       outboxPending: commands.queued + commands.inFlight,
       ambiguous: commands.ambiguous,

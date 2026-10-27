@@ -6,6 +6,7 @@ import type {
 } from "@photon-ai/advanced-imessage/grpc";
 
 import type {
+  PhotonCommandDeps,
   PhotonCommandOp,
   PhotonCommandExecutor,
 } from "../contracts.js";
@@ -19,7 +20,6 @@ import {
   mapFormatting,
   mapParts,
   mapReaction,
-  mapReplyTo,
 } from "./shared.js";
 
 /**
@@ -40,6 +40,24 @@ async function persistSentMessage(store: PhotonDb, sourceId: string, message: Me
     partCount: message.partCount ?? null,
     sentAt: new Date().toISOString(),
   });
+}
+
+async function sentMessageResult(store: PhotonDb, sourceId: string, message: Message) {
+  await persistSentMessage(store, sourceId, message);
+  return { result: message, providerReceipt: messageReceipt(message) };
+}
+
+async function resolveMiniAppLayoutImage(
+  deps: PhotonCommandDeps,
+  imageArtifactId: string | undefined,
+): Promise<Uint8Array | undefined> {
+  if (imageArtifactId === undefined) return undefined;
+  const artifact = await deps.artifacts.get(imageArtifactId);
+  if (!artifact)
+    throw new CommandValidationError("artifact_not_found", `Layout image artifact ${imageArtifactId} does not exist.`);
+  if (artifact.mediaType.toLowerCase() !== "image/jpeg")
+    throw new CommandValidationError("invalid_layout", "Mini-app card images must be JPEG.");
+  return artifact.data;
 }
 
 function listFilter(filter: {
@@ -98,9 +116,17 @@ async function persistMiniAppSession(
   sourceId: string,
   session: MiniAppCardSession,
 ): Promise<void> {
+  const updatedAt = new Date().toISOString();
   await store.upsertResource(sourceId, "miniapp_session", session.sessionId, {
-    session, updatedAt: new Date().toISOString(),
+    session, updatedAt,
   });
+  // The tool layer references cards by the guids the model sees — the sent
+  // card message and the bubble updates replace — so index both back to the
+  // authoritative session record.
+  for (const messageGuid of new Set([session.messageGuid, session.targetMessageGuid]))
+    await store.upsertResource(sourceId, "miniapp_session_by_message", messageGuid, {
+      sessionId: session.sessionId,
+    });
 }
 
 export function messageExecutors(
@@ -114,11 +140,10 @@ export function messageExecutors(
         enableDataDetection: args.enableDataDetection,
         enableLinkPreview: args.enableLinkPreview,
         formatting: mapFormatting(args.formatting),
-        replyTo: mapReplyTo(args.replyTo),
+        replyTo: args.replyTo,
         subject: args.subject,
       });
-      await persistSentMessage(store, command.sourceId, message);
-      return { result: message, receipt: messageReceipt(message) };
+      return sentMessageResult(store, command.sourceId, message);
     }),
 
     "messages.sendAttachment": executeOp("messages.sendAttachment", async (client, args, command) => {
@@ -126,35 +151,24 @@ export function messageExecutors(
         clientMessageId: commandProviderKey(command),
         effect: mapEffect(args.effect),
         isAudioMessage: args.isAudioMessage,
-        replyTo: mapReplyTo(args.replyTo),
+        replyTo: args.replyTo,
       });
-      await persistSentMessage(store, command.sourceId, message);
-      return { result: message, receipt: messageReceipt(message) };
+      return sentMessageResult(store, command.sourceId, message);
     }),
 
     "messages.sendMultipart": executeOp("messages.sendMultipart", async (client, args, command) => {
       const message = await client.messages.sendMultipart(args.chat, mapParts(args.parts), {
         clientMessageId: commandProviderKey(command),
         effect: mapEffect(args.effect),
-        replyTo: mapReplyTo(args.replyTo),
+        replyTo: args.replyTo,
         subject: args.subject,
         enableDataDetection: args.enableDataDetection,
       });
-      await persistSentMessage(store, command.sourceId, message);
-      return { result: message, receipt: messageReceipt(message) };
+      return sentMessageResult(store, command.sourceId, message);
     }),
 
     "messages.sendCustomizedMiniApp": executeOp("messages.sendCustomizedMiniApp", async (client, args, command, deps) => {
-      // layout.image carries an artifact reference, never raw model bytes.
-      let image: Uint8Array | undefined;
-      if (args.message.layout.image !== undefined) {
-        const artifact = await deps.artifacts.get(args.message.layout.image);
-        if (!artifact)
-          throw new CommandValidationError("artifact_not_found", `Layout image artifact ${args.message.layout.image} does not exist.`);
-        if (artifact.mediaType.toLowerCase() !== "image/jpeg")
-          throw new CommandValidationError("invalid_layout", "Mini-app card images must be JPEG.");
-        image = artifact.data;
-      }
+      const image = await resolveMiniAppLayoutImage(deps, args.message.layout.image);
       const result = await client.messages.sendCustomizedMiniApp(
         args.chat,
         miniAppMessage(args.message, image),
@@ -164,21 +178,13 @@ export function messageExecutors(
       await persistSentMessage(store, command.sourceId, result);
       return {
         result: { message: result, miniAppCardSession: result.miniAppCardSession },
-        receipt: { messageGuid: result.guid, sessionId: result.miniAppCardSession.sessionId },
+        providerReceipt: { messageGuid: result.guid, sessionId: result.miniAppCardSession.sessionId },
       };
     }),
 
     "messages.updateCustomizedMiniApp": executeOp("messages.updateCustomizedMiniApp", async (client, args, command, deps) => {
       const session = await resolveMiniAppSession(store, command.sourceId, args.session, command.chatGuid);
-      let image: Uint8Array | undefined;
-      if (args.message.layout.image !== undefined) {
-        const artifact = await deps.artifacts.get(args.message.layout.image);
-        if (!artifact)
-          throw new CommandValidationError("artifact_not_found", `Layout image artifact ${args.message.layout.image} does not exist.`);
-        if (artifact.mediaType.toLowerCase() !== "image/jpeg")
-          throw new CommandValidationError("invalid_layout", "Mini-app card images must be JPEG.");
-        image = artifact.data;
-      }
+      const image = await resolveMiniAppLayoutImage(deps, args.message.layout.image);
       const result = await client.messages.updateCustomizedMiniApp(
         session,
         miniAppMessage(args.message, image),
@@ -187,7 +193,7 @@ export function messageExecutors(
       await persistMiniAppSession(store, command.sourceId, result.miniAppCardSession);
       return {
         result: { message: result, miniAppCardSession: result.miniAppCardSession },
-        receipt: { messageGuid: result.guid, sessionId: result.miniAppCardSession.sessionId },
+        providerReceipt: { messageGuid: result.guid, sessionId: result.miniAppCardSession.sessionId },
       };
     }),
 
@@ -197,7 +203,7 @@ export function messageExecutors(
         backwardCompatText: args.backwardCompatText,
         partIndex: args.partIndex,
       });
-      return { result: message, receipt: messageReceipt(message) };
+      return { result: message, providerReceipt: messageReceipt(message) };
     }),
 
     "messages.unsend": executeOp("messages.unsend", async (client, args, command) => {
@@ -215,7 +221,7 @@ export function messageExecutors(
         args.chat, args.messageGuid, mapReaction(args.reaction), args.isSet,
         { clientMessageId: commandProviderKey(command), partIndex: args.partIndex },
       );
-      return { result: message, receipt: messageReceipt(message) };
+      return { result: message, providerReceipt: messageReceipt(message) };
     }),
 
     "messages.placeSticker": executeOp("messages.placeSticker", async (client, args, command) => {
@@ -223,7 +229,7 @@ export function messageExecutors(
         args.chat, args.messageGuid, args.stickerAttachmentGuid, args.placement,
         { clientMessageId: commandProviderKey(command), partIndex: args.partIndex },
       );
-      return { result: message, receipt: messageReceipt(message) };
+      return { result: message, providerReceipt: messageReceipt(message) };
     }),
 
     "messages.notifySilenced": executeOp("messages.notifySilenced", async (client, args, command) => {

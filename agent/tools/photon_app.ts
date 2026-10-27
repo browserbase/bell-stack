@@ -8,9 +8,9 @@ import {
 import {
   assertCardImageArtifact,
   assertValidCardLayout,
-  awaitCommandResult,
-  enqueuePhotonCommand,
   photonScope,
+  runPhotonCommand,
+  sendMiniAppCard,
 } from "../lib/photon-tools";
 
 const inputSchema = z.discriminatedUnion("action", [
@@ -35,60 +35,58 @@ export default defineTool({
   inputSchema,
   async execute(input, ctx) {
     const scope = await photonScope(ctx);
-    assertValidCardLayout(input.card.layout);
-    await assertCardImageArtifact(scope, input.card.layout);
     switch (input.action) {
       case "send": {
-        const { commandId } = await enqueuePhotonCommand(
-          scope,
-          "messages.sendCustomizedMiniApp",
-          { message: input.card },
-        );
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
+        const receipt = await sendMiniAppCard(scope, input.card, ctx.abortSignal);
         const result = receipt.status === "acknowledged" ? receipt.result : undefined;
-        const session =
-          result && typeof result === "object" && "miniAppCardSession" in result
-            ? (result as Record<string, unknown>).miniAppCardSession
-            : undefined;
         return {
           status: receipt.status,
-          commandId,
-          session,
-          messageGuid:
-            result && typeof result === "object"
-              ? (result as Record<string, unknown>).guid
-              : undefined,
+          commandId: receipt.commandId,
+          session: result?.miniAppCardSession,
+          messageGuid: result?.message.guid,
         };
       }
       case "update": {
+        assertValidCardLayout(input.card.layout);
+        await assertCardImageArtifact(scope, input.card.layout);
+        // The model holds a card's message guid (or the sessionId from a
+        // send's session object) — either resolves to the authoritative
+        // session the executor persisted, keyed by sessionId.
+        const index = await scope.store.getResource(
+          scope.conversation.sourceId,
+          "miniapp_session_by_message",
+          input.messageGuid,
+        );
+        const indexedSessionId =
+          index && !index.tombstone && typeof index.data.sessionId === "string" && index.data.sessionId.length > 0
+            ? index.data.sessionId
+            : undefined;
         const resource = await scope.store.getResource(
           scope.conversation.sourceId,
           "miniapp_session",
-          input.messageGuid,
+          indexedSessionId ?? input.messageGuid,
         );
-        const parsed = resource && !resource.tombstone
-          ? miniAppCardSessionSchema.safeParse(resource.data)
-          : undefined;
+        const parsed =
+          resource && !resource.tombstone
+            ? miniAppCardSessionSchema.safeParse(resource.data.session)
+            : undefined;
         if (!parsed?.success)
           throw new Error(
             "No mini-app session is persisted for that message. Only cards sent through this channel can be updated.",
           );
         if (parsed.data.chatGuid !== scope.conversation.chatGuid)
           throw new Error("The stored mini-app session belongs to a different conversation.");
-        const { commandId } = await enqueuePhotonCommand(
+        const receipt = await runPhotonCommand(
           scope,
           "messages.updateCustomizedMiniApp",
           { session: parsed.data, message: input.card },
+          ctx.abortSignal,
         );
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
         const result = receipt.status === "acknowledged" ? receipt.result : undefined;
         return {
           status: receipt.status,
-          commandId,
-          session:
-            result && typeof result === "object" && "miniAppCardSession" in result
-              ? (result as Record<string, unknown>).miniAppCardSession
-              : undefined,
+          commandId: receipt.commandId,
+          session: result?.miniAppCardSession,
         };
       }
     }

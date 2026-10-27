@@ -98,7 +98,7 @@ export function conversationExecutors(
       await persistChat(store, command.sourceId, created.chat);
       return {
         result: { chat: created.chat, initialMessageGuid: created.initialMessage?.guid },
-        receipt: { chatGuid: created.chat.guid },
+        providerReceipt: { chatGuid: created.chat.guid },
       };
     }),
 

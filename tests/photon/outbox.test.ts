@@ -158,7 +158,7 @@ describe("command execution state machine (server/photon/outbox.ts)", () => {
     const cmd = await enqueue(db, { commandId: "send-1", operation: "messages.sendText" });
     const executor: PhotonCommandExecutor = async (claimed) => {
       expect(claimed.providerKey).toBe(providerKeyFor(cmd.commandId, 0));
-      return { kind: "acknowledged", result: { guid: "msg-9" }, providerReceipt: { ok: true } };
+      return { kind: "acknowledged", result: fx.message({ guid: "msg-9" }), providerReceipt: { ok: true } };
     };
     await runOnce(db, executor, ["messages.sendText"]);
     const row = await db.getCommand("send-1");
@@ -237,7 +237,12 @@ describe("command execution state machine (server/photon/outbox.ts)", () => {
     const seen: string[] = [];
     const executor: PhotonCommandExecutor = async (claimed) => {
       seen.push(claimed.commandId);
-      return { kind: "acknowledged", result: { guid: "att-1" } };
+      return {
+        kind: "acknowledged",
+        result: claimed.operation === "attachments.upload"
+          ? { attachmentGuid: "att-1", transferState: "finished", totalBytes: 1 }
+          : fx.message({ guid: claimed.commandId }),
+      };
     };
     await runOnce(db, executor, ["attachments.upload", "messages.sendAttachment"]);
     // The upload runs first (or alone); the dependent send may run only after.

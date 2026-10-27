@@ -5,11 +5,11 @@ import {
   type ConnectionPrincipal,
 } from "eve/connections";
 import { z } from "zod";
+import { isVerifiedPhotonPrincipal } from "../photon/principal";
 import { hash, linkConfig, LinkSetupError, seal, unseal, type LinkConfig } from "./config";
 import { createLinkStore, ownerKey, type Grant, type LinkOwner, type LinkStore, type OwnerStore } from "./store";
 
 const scopes = ["payment_methods.agentic", "userinfo:read"];
-const PHOTON_PRINCIPAL_PATTERN = /^photon:[0-9a-f]{8,128}$/;
 const tokenResponse = z.object({
   access_token: z.string().min(1), refresh_token: z.string().min(1),
   token_type: z.string().refine((value) => value.toLowerCase() === "bearer"),
@@ -29,8 +29,7 @@ export function linkOwner(principal: ConnectionPrincipal): LinkOwner {
   // Photon principals are `photon:` + sha256 of the verified canonical handle
   // tuple. Grants persisted under retired `linq:` owners stay orphaned: every
   // wallet requires fresh consent under the new owner identity.
-  if (principal.type !== "user" || principal.issuer !== "photon"
-    || !PHOTON_PRINCIPAL_PATTERN.test(principal.id))
+  if (!isVerifiedPhotonPrincipal(principal))
     return failed("principal_required");
   return { issuer: principal.issuer, id: principal.id };
 }

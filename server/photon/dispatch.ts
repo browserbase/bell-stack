@@ -8,18 +8,31 @@ import {
   PHOTON_RETIRE_PATH,
   type PhotonConfig,
 } from "./config.js";
-import type { PhotonDispatchResult, PhotonEventEnvelope } from "./contracts.js";
+import {
+  dispatchResultSchema,
+  type PhotonDispatchResult,
+  type PhotonEventEnvelope,
+} from "./contracts.js";
 import {
   bindingIdFor,
   dispatchKeyFor,
   eveAddressFor,
   handleKey,
+  intentIdFor,
   normalizeHandle,
+  parseActorKey,
   photonPrincipalId,
   sha256Hex,
 } from "./identity.js";
 import { matchInboundToInteractions } from "./interactions.js";
-import { admitGroup, admitSender, groupActorAuthorized, type ConversationState } from "./policy.js";
+import {
+  admitGroup,
+  admitSender,
+  applyMembershipDelta,
+  classifyScope,
+  groupActorAuthorized,
+  toConversationState,
+} from "./policy.js";
 import type { ConversationRow, InboxRow, IntentRow, PhotonDb } from "./store.js";
 import { stableJson } from "./normalize.js";
 
@@ -34,13 +47,6 @@ import { stableJson } from "./normalize.js";
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 /** Deliveries that keep failing quarantine instead of spinning forever. */
 const MAX_INTENT_ATTEMPTS = 12;
-
-const dispatchResultSchema = z.object({
-  status: z.enum(["dispatched", "duplicate", "state_applied", "rejected", "retryable"]),
-  sessionId: z.string().optional(),
-  deliveryId: z.string().optional(),
-  reason: z.string().optional(),
-}).strict();
 
 export interface DispatcherDeps {
   readonly store: PhotonDb;
@@ -64,19 +70,6 @@ interface PostOutcome {
   readonly kind: "ok" | "retryable";
   readonly result?: PhotonDispatchResult;
   readonly reason?: string;
-}
-
-function toConversationState(row: ConversationRow | undefined): ConversationState | undefined {
-  if (!row) return undefined;
-  return {
-    bindingId: row.bindingId,
-    scope: row.scope,
-    generation: row.generation,
-    membership: row.membership,
-    membershipVersion: row.membershipVersion,
-    initiatingPrincipal: row.initiatingPrincipal,
-    retiredAt: row.retiredAt,
-  };
 }
 
 export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
@@ -106,7 +99,11 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
     }
     const text = await response.text().catch(() => "");
     if (!response.ok) {
-      // 5xx and rate limits are retryable; a 4xx is a durable rejection.
+      // A rejected credential means our call never reached the route's
+      // contract — that is a transport failure, not a content rejection.
+      if (response.status === 401 || response.status === 403)
+        return { kind: "retryable", reason: `internal route auth failed (${response.status})` };
+      // 5xx and rate limits are retryable; other 4xx are durable rejections.
       const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
       if (!retryable)
         return { kind: "ok", result: { status: "rejected", reason: `internal_route_${response.status}` } };
@@ -114,17 +111,7 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
     }
     const parsed = dispatchResultSchema.safeParse(JSON.parse(text || "{}"));
     if (!parsed.success) return { kind: "retryable", reason: "internal route returned an unreadable result" };
-    const { status, sessionId, deliveryId, reason } = parsed.data;
-    return {
-      kind: "ok",
-      result: status === "dispatched"
-        ? { status, sessionId: sessionId ?? "", deliveryId }
-        : status === "duplicate"
-          ? { status, sessionId, deliveryId }
-          : status === "rejected" || status === "retryable"
-            ? { status, reason: reason ?? status }
-            : { status },
-    };
+    return { kind: "ok", result: parsed.data };
   }
 
   /* ---------------------------------------------------------------- */
@@ -155,11 +142,13 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
     if (!chatGuid) return undefined;
     if (existing && !existing.retiredAt) return existing;
     // A retired binding's next inbound starts a fresh generation so stale
-    // session state can never alias the new conversation.
-    const scope = admitGroup(config, chatGuid) ? "group" : "direct";
+    // session state can never alias the new conversation. Scope classifies
+    // the chat, not the retired generation — the prior row still counts as
+    // group evidence for the rebinding.
+    const scope = classifyScope(config, existing, chatGuid);
     const generation = (existing?.generation ?? 0) + 1;
     const bindingId = bindingIdFor(sourceId, chatGuid, generation);
-    const handle = normalizeHandle(envelope.actor?.slice(envelope.actor.indexOf(":") + 1));
+    const handle = parseActorKey(envelope.actor);
     const initiatingPrincipal = handle ? photonPrincipalId(config.projectId, handle) : undefined;
     const membership = scope === "group" ? await primeGroupMembership(chatGuid) : [];
     return store.upsertConversation({
@@ -175,17 +164,9 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
     envelope: PhotonEventEnvelope,
     binding: ConversationRow | undefined,
   ): Promise<void> {
-    const event = envelope.event;
-    if (!binding || event.family !== "group") return;
-    if (event.type !== "participantAdded" && event.type !== "participantRemoved" && event.type !== "participantLeft")
-      return;
-    const handle = normalizeHandle(event.participant.address);
-    if (!handle) return;
-    const key = handleKey(handle);
-    const membership = new Set(binding.membership);
-    if (event.type === "participantAdded") membership.add(key);
-    else membership.delete(key);
-    await store.updateMembership(binding.bindingId, [...membership]);
+    if (!binding) return;
+    const next = applyMembershipDelta(binding.membership, envelope.event);
+    if (next) await store.updateMembership(binding.bindingId, next);
   }
 
   /* ---------------------------------------------------------------- */
@@ -210,19 +191,16 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
     const chatGuid = row.chatGuid;
     if (!chatGuid) return undefined;
     if (binding?.retiredAt) return "conversation_retired";
-    const scope = binding?.scope ?? (admitGroup(config, chatGuid) ? "group" : "direct");
+    const scope = classifyScope(config, binding, chatGuid);
+    const handle = parseActorKey(row.actor);
     if (scope === "group") {
       if (!admitGroup(config, chatGuid)) return "group_not_admitted";
-      const handle = normalizeHandle(row.actor?.slice(row.actor.indexOf(":") + 1));
-      const state = toConversationState(binding) ?? {
-        scope: "group" as const, generation: 1, membership: [], membershipVersion: 0,
-      };
+      const state = toConversationState(binding, "group")!;
       if (!groupActorAuthorized(state, handle)) return "actor_not_in_membership";
-    } else {
+    } else if (!admitSender(config, handle)) {
       // Allowlists are re-checked at delivery time: config may have
       // narrowed since the event was admitted.
-      const handle = normalizeHandle(row.actor?.slice(row.actor.indexOf(":") + 1));
-      if (!admitSender(config, handle)) return "sender_not_allowed";
+      return "sender_not_allowed";
     }
     return undefined;
   }
@@ -350,7 +328,7 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
     const inputDigest = sha256Hex(stableJson([action, row.payloadHash, binding?.bindingId ?? null]));
     const intent = (await store.getIntentByKey(dispatchKey))
       ?? await store.upsertIntent({
-        intentId: `intent:${sha256Hex(dispatchKey).slice(0, 48)}`,
+        intentId: intentIdFor(dispatchKey),
         sourceId, logEpoch, sequence: row.sequence, action,
         eveSessionId: binding?.eveSessionId,
         dispatchKey, inputDigest,
@@ -370,14 +348,16 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
   /* ---------------------------------------------------------------- */
 
   async function runOnce(): Promise<number> {
-    let settled = 0;
     const boundary = await store.activationBoundary(sourceId);
-    // Distinct chat scopes with any dispatchable row; per-chat queues keep
-    // admitted and state-only events in provider sequence order while a
-    // stalled chat never blocks an independent one.
-    for (const chatGuid of await pendingChatScopes()) {
+    // Chat scopes (null = chat-less state rows) with any dispatchable row.
+    // Rows inside one scope keep provider sequence order; the scopes
+    // themselves are independent, so they run in parallel — a stalled chat
+    // (one postInternal can burn a 15s timeout) never blocks the others.
+    const scopes = await store.dispatchableChatScopes(sourceId, deps.batchSize);
+    const perScope = await Promise.all(scopes.map(async (chatGuid) => {
+      let settled = 0;
       try {
-        for (const row of await pendingRowsForChat(chatGuid)) {
+        for (const row of await store.dispatchableForChat(sourceId, chatGuid, deps.batchSize)) {
           if (await processRow(row, boundary)) settled++;
           else break; // undelivered head preserves this chat's ordering
         }
@@ -387,32 +367,27 @@ export function createDispatcher(deps: DispatcherDeps): PhotonDispatcher {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    }
-    // Retry deliveries whose intents outlived a crashed attempt.
-    for (const intent of await store.pendingIntents(sourceId, deps.batchSize)) {
-      try {
-        const row = await store.getInboxRow(intent);
-        const outcome = await deliverIntent(intent);
-        if (await settleIntent(intent, outcome, row)) settled++;
-      } catch (error) {
-        log({
-          level: "error", msg: "photon_intent_retry_failed", intentId: intent.intentId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    return settled;
-  }
-
-  /** Chat scopes ("" = no chat) holding any captured dispatchable row. */
-  async function pendingChatScopes(): Promise<string[]> {
-    const scopes = await store.dispatchableChatScopes(sourceId, deps.batchSize);
-    return scopes.map((scope) => scope ?? "");
-  }
-
-  /** Per-chat pending rows of both dispatchable dispositions, in order. */
-  async function pendingRowsForChat(chatGuid: string): Promise<InboxRow[]> {
-    return store.dispatchableForChat(sourceId, chatGuid === "" ? null : chatGuid, deps.batchSize);
+      return settled;
+    }));
+    // Retry deliveries whose intents outlived a crashed attempt — the same
+    // independent-work shape, so the same bounded-parallel structure.
+    const retried = await Promise.all(
+      (await store.pendingIntents(sourceId, deps.batchSize)).map(async (intent) => {
+        try {
+          const row = await store.getInboxRow(intent);
+          const outcome = await deliverIntent(intent);
+          return await settleIntent(intent, outcome, row);
+        } catch (error) {
+          log({
+            level: "error", msg: "photon_intent_retry_failed", intentId: intent.intentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return false;
+        }
+      }),
+    );
+    return perScope.reduce((total, n) => total + n, 0)
+      + retried.filter(Boolean).length;
   }
 
   return { runOnce };
@@ -435,12 +410,28 @@ export async function retireViaInternalRoute(
       },
       body: JSON.stringify({ eveSessionId, reason }),
     });
-    if (!response.ok)
-      return response.status === 408 || response.status === 429 || response.status >= 500 ? "retryable" : "retired";
+    if (!response.ok) {
+      // A non-success status means the session was NOT retired — a rejected
+      // credential (401/403) or other 4xx must keep the deadline open so a
+      // misconfiguration alarms through retries instead of silently
+      // dropping the deadline while the session keeps living.
+      console.error(JSON.stringify({
+        event: "photon.retire_rejected", eveSessionId, status: response.status,
+      }));
+      return "retryable";
+    }
     const parsed = z.object({ status: z.enum(["retired", "already_retired", "retryable"]) })
       .safeParse(await response.json().catch(() => null));
     return parsed.success ? parsed.data.status : "retryable";
-  } catch {
+  } catch (error) {
+    // Same alarm story as a rejected call: the deadline stays open and every
+    // sweep logs — a permanently failing route surfaces instead of silently
+    // leaking the session.
+    console.error(JSON.stringify({
+      event: "photon.retire_failed",
+      eveSessionId,
+      error: error instanceof Error ? error.message : String(error),
+    }));
     return "retryable";
   }
 }
@@ -448,8 +439,10 @@ export async function retireViaInternalRoute(
 /**
  * Bounded retirement sweep: every due deadline goes through the private
  * retire route (never a bare cancellation), then the deadline and its
- * binding are marked retired. Retryable route outcomes leave the deadline
- * open for the next sweep.
+ * binding are marked retired. Retirements are independent — they run in
+ * parallel within the batch so one hung route cannot serialize the sweep's
+ * timeout budget. Retryable route outcomes leave the deadline open for the
+ * next sweep.
  */
 export async function retireDueSessions(
   db: PhotonDb,
@@ -459,17 +452,17 @@ export async function retireDueSessions(
   const fetcher = options?.fetch ?? fetch;
   const now = options?.now ?? (() => new Date());
   const batchSize = options?.batchSize ?? 64;
-  let retired = 0;
-  let retried = 0;
-  for (const deadline of await db.dueDeadlines(now(), batchSize)) {
-    const result = await retireViaInternalRoute(config, deadline.eveSessionId, "absolute_deadline", fetcher);
-    if (result === "retryable") {
-      retried++;
-      continue;
-    }
-    await db.markDeadlineRetired(deadline.eveSessionId, "absolute_deadline");
-    if (deadline.bindingId) await db.retireConversation(deadline.bindingId);
-    retired++;
-  }
-  return { retired, retried };
+  const outcomes = await Promise.all(
+    (await db.dueDeadlines(now(), batchSize)).map(async (deadline) => {
+      const result = await retireViaInternalRoute(
+        config, deadline.eveSessionId, "absolute_deadline", fetcher,
+      );
+      if (result === "retryable") return false;
+      await db.markDeadlineRetired(deadline.eveSessionId, "absolute_deadline");
+      if (deadline.bindingId) await db.retireConversation(deadline.bindingId);
+      return true;
+    }),
+  );
+  const retired = outcomes.filter(Boolean).length;
+  return { retired, retried: outcomes.length - retired };
 }

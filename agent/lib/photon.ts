@@ -5,7 +5,7 @@ import type { SessionAuthContext } from "eve/context";
 
 import type { Message, PhotonCommand } from "../../server/photon/contracts.js";
 import {
-  canonicalJson,
+  canonicalTupleJson,
   photonSessionAuth,
   semanticKeyFor,
   sha256Hex,
@@ -20,11 +20,7 @@ import {
   PHOTON_ATTR_SOURCE,
 } from "./messaging-auth";
 
-export function requiredPhotonEnv(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required for the Photon channel.`);
-  return value;
-}
+export { photonAttribute } from "./messaging-auth";
 
 /**
  * Timing-safe check for `authorization: Bearer <internalSecret>` on the
@@ -41,16 +37,6 @@ export function verifyInternalAuth(req: Request, secret: string): boolean {
     createHash("sha256").update(presented, "utf8").digest(),
     createHash("sha256").update(secret, "utf8").digest(),
   );
-}
-
-/** Reads a single-valued photon session auth attribute. */
-export function photonAttribute(
-  auth: Pick<SessionAuthContext, "attributes">,
-  key: string,
-): string | undefined {
-  const value = auth.attributes[key];
-  const result = Array.isArray(value) ? value[0] : value;
-  return typeof result === "string" && result.length > 0 ? result : undefined;
 }
 
 /**
@@ -137,12 +123,12 @@ export async function postSessionNotice(
 ): Promise<void> {
   const conversation = await db.findConversationBySession(sessionId);
   if (!conversation || conversation.retiredAt) return;
-  const noticeKey = sha256Hex(canonicalJson(["v1", text])).slice(0, 24);
+  const noticeKey = sha256Hex(canonicalTupleJson(["v1", text])).slice(0, 24);
   const command: PhotonCommand = {
     commandId: `photon-cmd:notice:${sessionId}:${noticeKey}`,
     operation: "messages.sendText",
     args: { chat: conversation.chatGuid, text },
-    argsDigest: sha256Hex(canonicalJson(["v1", text])),
+    argsDigest: sha256Hex(canonicalTupleJson(["v1", text])),
     initiatorPrincipal: conversation.initiatingPrincipal,
     audience: conversation.scope,
     sourceId: conversation.sourceId,

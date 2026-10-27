@@ -1,13 +1,30 @@
-import { createHash } from "node:crypto";
-
 import type { SessionAuthContext } from "eve/context";
 
 import { E164_PATTERN } from "./config.js";
+import {
+  canonicalTupleJson,
+  IDENTITY_VERSION,
+  PHOTON_AUTHENTICATOR,
+  PHOTON_ISSUER,
+  PHOTON_PRINCIPAL_TYPE,
+  sha256Hex,
+} from "./principal.js";
 
-export const PHOTON_AUTHENTICATOR = "photon-imessage";
-export const PHOTON_ISSUER = "photon";
-export const PHOTON_PRINCIPAL_TYPE = "user";
-export const IDENTITY_VERSION = "v1";
+/* The principal-verification contract lives in principal.ts — a leaf module
+ * the Next.js bundle can also reach (no `.js` relative imports inside).
+ * Re-exported here so every Node-side consumer keeps one import site. */
+export {
+  canonicalTupleJson,
+  IDENTITY_VERSION,
+  isPhotonAuth,
+  isVerifiedPhotonAuth,
+  isVerifiedPhotonPrincipal,
+  PHOTON_AUTHENTICATOR,
+  PHOTON_ISSUER,
+  PHOTON_PRINCIPAL_PATTERN,
+  PHOTON_PRINCIPAL_TYPE,
+  sha256Hex,
+} from "./principal.js";
 
 /** Canonical handle identities used throughout the channel. */
 export type CanonicalHandle =
@@ -33,12 +50,17 @@ export function handleKey(handle: CanonicalHandle): string {
   return `${handle.kind}:${handle.value}`;
 }
 
-export function canonicalJson(value: readonly unknown[]): string {
-  return JSON.stringify(value);
-}
-
-export function sha256Hex(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+/**
+ * Inverse of {@link handleKey}: parses a `phone:+...` or `email:...` actor key
+ * back into a verified CanonicalHandle, or `null` when absent or malformed.
+ */
+export function parseActorKey(actor: string | null | undefined): CanonicalHandle | null {
+  if (!actor) return null;
+  const separator = actor.indexOf(":");
+  if (separator <= 0) return null;
+  const kind = actor.slice(0, separator);
+  const handle = normalizeHandle(actor.slice(separator + 1));
+  return handle && handle.kind === kind ? handle : null;
 }
 
 /**
@@ -48,7 +70,7 @@ export function sha256Hex(value: string): string {
  * explicitly admitted lines in one project keeps one wallet owner.
  */
 export function photonPrincipalId(projectId: string, handle: CanonicalHandle): string {
-  return `photon:${sha256Hex(canonicalJson([IDENTITY_VERSION, projectId, handle.kind, handle.value]))}`;
+  return `photon:${sha256Hex(canonicalTupleJson([IDENTITY_VERSION, projectId, handle.kind, handle.value]))}`;
 }
 
 /** Builds the Eve session principal for a verified Photon event actor. */
@@ -67,13 +89,9 @@ export function photonSessionAuth(
   };
 }
 
-export function isPhotonAuth(auth: Pick<SessionAuthContext, "authenticator" | "issuer"> | null | undefined): boolean {
-  return auth?.authenticator === PHOTON_AUTHENTICATOR && auth.issuer === PHOTON_ISSUER;
-}
-
 /** Stable source binding identity for one enrolled (project, instance, line). */
 export function sourceIdFor(projectId: string, instanceId: string, phoneNumber: string): string {
-  return `photon-src:${sha256Hex(canonicalJson([IDENTITY_VERSION, projectId, instanceId, phoneNumber]))}`;
+  return `photon-src:${sha256Hex(canonicalTupleJson([IDENTITY_VERSION, projectId, instanceId, phoneNumber]))}`;
 }
 
 /**
@@ -81,7 +99,7 @@ export function sourceIdFor(projectId: string, instanceId: string, phoneNumber: 
  * GUID and generation. Chats are never reconstructed from a sender number.
  */
 export function conversationKey(sourceId: string, chatGuid: string, generation: number): string {
-  return canonicalJson([IDENTITY_VERSION, sourceId, chatGuid, generation]);
+  return canonicalTupleJson([IDENTITY_VERSION, sourceId, chatGuid, generation]);
 }
 
 export function bindingIdFor(sourceId: string, chatGuid: string, generation: number): string {
@@ -104,6 +122,11 @@ export function dispatchKeyFor(
   return key.length <= 256 ? key : `photon:${action}:${sha256Hex(key)}`;
 }
 
+/** Durable intent identity for one dispatch key (the key itself dedups). */
+export function intentIdFor(dispatchKey: string): string {
+  return `intent:${sha256Hex(dispatchKey)}`;
+}
+
 /** Deterministic provider idempotency key (`clientMessageId`) for a command. */
 export function providerKeyFor(commandId: string, attempt: number): string {
   return `bell:${commandId}:${attempt}`;
@@ -123,7 +146,7 @@ export function semanticKeyFor(parts: {
   readonly toolCallId?: string;
   readonly commandId?: string;
 }): string {
-  const raw = canonicalJson([
+  const raw = canonicalTupleJson([
     "v1",
     parts.sessionId ?? null,
     parts.turnId ?? null,

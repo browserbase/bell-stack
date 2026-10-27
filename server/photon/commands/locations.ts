@@ -52,7 +52,7 @@ export function locationExecutors(
       const receipt = await client.locations.request(args.chat, args.address, {
         clientMessageId: commandProviderKey(command),
       });
-      return { result: receipt, receipt };
+      return { result: receipt, providerReceipt: receipt };
     }),
 
     "locations.list": executeOp("locations.list", async (client) => {

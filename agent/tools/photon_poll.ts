@@ -1,14 +1,12 @@
 import { defineTool, toolOutput } from "eve/tools";
 import { z } from "zod";
 
+import type { Poll } from "../../server/photon/contracts.js";
 import {
-  asArray,
-  asRecord,
-  asString,
   assertTargetInConversation,
-  awaitCommandResult,
-  enqueuePhotonCommand,
   photonScope,
+  queuePhotonCommand,
+  runPhotonCommand,
 } from "../lib/photon-tools";
 
 const pollGuid = z.string().min(1).max(512);
@@ -57,29 +55,21 @@ const inputSchema = z.discriminatedUnion("action", [
 ]);
 
 /** Compact projection of a provider Poll snapshot for the model. */
-function projectPoll(value: unknown): Record<string, unknown> | undefined {
-  const poll = asRecord(value);
+function projectPoll(poll: Poll | undefined): Record<string, unknown> | undefined {
   if (!poll) return undefined;
   return {
-    pollMessageGuid: asString(poll.pollMessageGuid),
-    title: asString(poll.title),
-    chatGuid: asString(poll.chatGuid),
-    options: asArray(poll.options).map((entry) => {
-      const option = asRecord(entry);
-      return {
-        optionIdentifier: asString(option?.optionIdentifier),
-        text: asString(option?.text),
-        creatorHandle: asString(option?.creatorHandle),
-      };
-    }),
-    votes: asArray(poll.votes).map((entry) => {
-      const vote = asRecord(entry);
-      const participant = asRecord(vote?.participant);
-      return {
-        optionIdentifier: asString(vote?.optionIdentifier),
-        participant: asString(participant?.address),
-      };
-    }),
+    pollMessageGuid: poll.pollMessageGuid,
+    title: poll.title,
+    chatGuid: poll.chatGuid,
+    options: (poll.options ?? []).map((option) => ({
+      optionIdentifier: option.optionIdentifier,
+      text: option.text,
+      creatorHandle: option.creatorHandle,
+    })),
+    votes: (poll.votes ?? []).map((vote) => ({
+      optionIdentifier: vote.optionIdentifier,
+      participant: vote.participant?.address,
+    })),
   };
 }
 
@@ -89,55 +79,50 @@ export default defineTool({
   inputSchema,
   async execute(input, ctx) {
     const scope = await photonScope(ctx);
+    if (input.action !== "create")
+      await assertTargetInConversation(scope, "poll", input.pollMessageGuid, "The poll");
     switch (input.action) {
       case "create": {
-        const { commandId } = await enqueuePhotonCommand(scope, "polls.create", {
-          title: input.title,
-          choices: input.choices,
-        });
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
+        const receipt = await runPhotonCommand(
+          scope,
+          "polls.create",
+          { title: input.title, choices: input.choices },
+          ctx.abortSignal,
+        );
         return {
           status: receipt.status,
-          commandId,
+          commandId: receipt.commandId,
           poll: receipt.status === "acknowledged" ? projectPoll(receipt.result) : undefined,
         };
       }
       case "get": {
-        await assertTargetInConversation(scope, "poll", input.pollMessageGuid, "The poll");
-        const { commandId } = await enqueuePhotonCommand(scope, "polls.get", {
-          pollMessageGuid: input.pollMessageGuid,
-        });
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
+        const receipt = await runPhotonCommand(
+          scope,
+          "polls.get",
+          { pollMessageGuid: input.pollMessageGuid },
+          ctx.abortSignal,
+        );
         return {
           status: receipt.status,
-          commandId,
+          commandId: receipt.commandId,
           poll: receipt.status === "acknowledged" ? projectPoll(receipt.result) : undefined,
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };
       }
-      case "vote": {
-        await assertTargetInConversation(scope, "poll", input.pollMessageGuid, "The poll");
-        const { commandId, deduplicated } = await enqueuePhotonCommand(scope, "polls.vote", {
+      case "vote":
+        return queuePhotonCommand(scope, "polls.vote", {
           pollMessageGuid: input.pollMessageGuid,
           optionIdentifier: input.optionIdentifier,
         });
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "unvote": {
-        await assertTargetInConversation(scope, "poll", input.pollMessageGuid, "The poll");
-        const { commandId, deduplicated } = await enqueuePhotonCommand(scope, "polls.unvote", {
+      case "unvote":
+        return queuePhotonCommand(scope, "polls.unvote", {
           pollMessageGuid: input.pollMessageGuid,
         });
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "addOption": {
-        await assertTargetInConversation(scope, "poll", input.pollMessageGuid, "The poll");
-        const { commandId, deduplicated } = await enqueuePhotonCommand(scope, "polls.addOption", {
+      case "addOption":
+        return queuePhotonCommand(scope, "polls.addOption", {
           pollMessageGuid: input.pollMessageGuid,
           text: input.text,
         });
-        return { status: "queued", commandId, deduplicated };
-      }
     }
   },
   toModelOutput(output) {

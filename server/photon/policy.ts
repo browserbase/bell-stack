@@ -1,6 +1,6 @@
 import type { PhotonConfig } from "./config.js";
-import type { AdmissionDecision, PhotonEventEnvelope } from "./contracts.js";
-import { handleKey, normalizeHandle, type CanonicalHandle } from "./identity.js";
+import type { AdmissionDecision, PhotonEventEnvelope, PhotonNormalizedEvent } from "./contracts.js";
+import { handleKey, normalizeHandle, parseActorKey, type CanonicalHandle } from "./identity.js";
 
 /**
  * Event admission and authorization policy. Pure functions over the verified
@@ -17,6 +17,47 @@ export interface ConversationState {
   readonly retiredAt?: string;
 }
 
+export function toConversationState(
+  row: ConversationState | undefined,
+  fallbackScope?: ConversationScope,
+): ConversationState | undefined {
+  if (!row && !fallbackScope) return undefined;
+  return {
+    bindingId: row?.bindingId,
+    scope: row?.scope ?? fallbackScope ?? "direct",
+    generation: row?.generation ?? 1,
+    membership: row?.membership ?? [],
+    membershipVersion: row?.membershipVersion ?? 0,
+    initiatingPrincipal: row?.initiatingPrincipal,
+    retiredAt: row?.retiredAt,
+  };
+}
+
+/**
+ * Computes the next group membership roster for a participant delta event,
+ * or `undefined` when the event is not a membership delta or leaves the
+ * roster unchanged.
+ */
+export function applyMembershipDelta(
+  membership: readonly string[],
+  event: PhotonNormalizedEvent,
+): string[] | undefined {
+  if (
+    event.family !== "group" ||
+    (event.type !== "participantAdded" &&
+      event.type !== "participantRemoved" &&
+      event.type !== "participantLeft")
+  )
+    return undefined;
+  const handle = normalizeHandle(event.participant?.address);
+  if (!handle) return undefined;
+  const key = handleKey(handle);
+  if (event.type === "participantAdded") {
+    return membership.includes(key) ? undefined : [...membership, key];
+  }
+  return membership.includes(key) ? membership.filter((member) => member !== key) : undefined;
+}
+
 export function admitSender(config: PhotonConfig, handle: CanonicalHandle | null): boolean {
   if (!handle) return false;
   if (handle.kind === "phone") return config.allowedSenders.includes(handle.value);
@@ -27,15 +68,25 @@ export function admitGroup(config: PhotonConfig, chatGuid: string | undefined): 
   return !!chatGuid && config.allowedGroups.includes(chatGuid);
 }
 
-function actorHandle(envelope: PhotonEventEnvelope): CanonicalHandle | null {
-  const actor = envelope.actor;
-  if (!actor) return null;
-  const separator = actor.indexOf(":");
-  if (separator <= 0) return null;
-  const kind = actor.slice(0, separator);
-  const value = actor.slice(separator + 1);
-  if (kind !== "phone" && kind !== "email") return null;
-  return normalizeHandle(value);
+export type ConversationScope = "direct" | "group";
+
+/**
+ * The single scope classification every layer shares. A chat is a group
+ * when EITHER the durable binding says so OR its guid is admitted via
+ * `allowedGroups` — group evidence always wins, direct only when neither
+ * applies. The precedence is deliberately asymmetric: a stored "direct"
+ * binding can never demote a chat the allowlist now governs as a group,
+ * and a retired binding's scope still describes the chat for its next
+ * generation. Admission, dispatch gating and the internal route must all
+ * resolve scope through this function — never re-spell the precedence.
+ */
+export function classifyScope(
+  config: PhotonConfig,
+  conversation: Pick<ConversationState, "scope"> | undefined,
+  chatGuid: string | undefined,
+): ConversationScope {
+  if (conversation?.scope === "group") return "group";
+  return admitGroup(config, chatGuid) ? "group" : "direct";
 }
 
 function denied(reason: string, updatesMembership = false): AdmissionDecision {
@@ -59,13 +110,14 @@ export function admitEvent(
 ): AdmissionDecision {
   const event = envelope.event;
   const chatGuid = envelope.chatGuid;
-  const isGroup = conversation?.scope === "group" || chatGuid !== undefined && config.allowedGroups.includes(chatGuid);
+  const isGroup = classifyScope(config, conversation, chatGuid) === "group";
 
+  // A bound group conversation whose chat lost admission is denied; the
+  // allowlisted-guid-on-direct-conversation conflict is unreachable by
+  // construction now that classifyScope is the single classifier.
   if (isGroup && !admitGroup(config, chatGuid)) return denied("group_not_admitted");
-  if (!isGroup && chatGuid !== undefined && config.allowedGroups.includes(chatGuid))
-    return denied("group_scope_conflict");
 
-  const actor = actorHandle(envelope);
+  const actor = parseActorKey(envelope.actor);
 
   switch (event.family) {
     case "message": {

@@ -8,7 +8,8 @@ import { describe, expect, it } from "vitest";
 
 import type { AttachmentInfo, DownloadAttachmentChunk } from "@photon-ai/advanced-imessage/grpc";
 
-import { buildUploadInput, collectDownload, sanitizeFileName } from "../../server/photon/media";
+import { buildUploadInput, collectDownload } from "../../server/photon/media";
+import { sanitizeFileName } from "../../server/photon/filename";
 import { fakeStream } from "./fixtures/harness";
 import { attachment } from "./fixtures/sdk-events";
 

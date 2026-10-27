@@ -10,14 +10,13 @@ import {
   textFormatSchema,
 } from "../../server/photon/contracts.js";
 import {
-  assertCardImageArtifact,
   assertTargetInConversation,
-  assertValidCardLayout,
-  awaitCommandResult,
-  enqueuePhotonCommand,
   modelFileInputSchema,
   photonScope,
+  queuePhotonCommand,
   resolveAttachmentGuid,
+  sendMiniAppCard,
+  uploadPendingResponse,
 } from "../lib/photon-tools";
 
 const guid = z.string().min(1).max(512);
@@ -113,8 +112,8 @@ export default defineTool({
   async execute(input, ctx) {
     const scope = await photonScope(ctx);
     switch (input.action) {
-      case "send": {
-        const { commandId, deduplicated } = await enqueuePhotonCommand(scope, "messages.sendText", {
+      case "send":
+        return queuePhotonCommand(scope, "messages.sendText", {
           text: input.text,
           subject: input.subject,
           effect: input.effect,
@@ -123,37 +122,19 @@ export default defineTool({
           formatting: input.formatting,
           replyTo: input.replyTo,
         });
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "sendMultipart": {
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "messages.sendMultipart",
-          {
-            parts: input.parts,
-            subject: input.subject,
-            effect: input.effect,
-            replyTo: input.replyTo,
-            enableDataDetection: input.enableDataDetection,
-          },
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
+      case "sendMultipart":
+        return queuePhotonCommand(scope, "messages.sendMultipart", {
+          parts: input.parts,
+          subject: input.subject,
+          effect: input.effect,
+          replyTo: input.replyTo,
+          enableDataDetection: input.enableDataDetection,
+        });
       case "sendAttachment": {
         const resolved = await resolveAttachmentGuid(scope, input, ctx.abortSignal);
-        if (!resolved.resolved) {
-          const receipt = resolved.receipt;
-          return {
-            status: receipt.status,
-            commandId: receipt.commandId,
-            stage: "upload",
-            detail:
-              receipt.status === "pending" || receipt.status === "ambiguous"
-                ? "The media upload is still in flight. Retry this send once it is acknowledged."
-                : "The media upload did not complete.",
-          };
-        }
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
+        if (!resolved.resolved)
+          return uploadPendingResponse(resolved.receipt, "media");
+        return queuePhotonCommand(
           scope,
           "messages.sendAttachment",
           {
@@ -164,55 +145,36 @@ export default defineTool({
           },
           { dependsOn: resolved.dependsOn },
         );
-        return { status: "queued", commandId, deduplicated };
       }
-      case "edit": {
+      case "edit":
         await assertTargetInConversation(scope, "message", input.messageGuid, "The target message");
-        const { commandId, deduplicated } = await enqueuePhotonCommand(scope, "messages.edit", {
+        return queuePhotonCommand(scope, "messages.edit", {
           messageGuid: input.messageGuid,
           newText: input.newText,
           backwardCompatText: input.backwardCompatText,
           partIndex: input.partIndex,
         });
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "unsend": {
+      case "unsend":
         await assertTargetInConversation(scope, "message", input.messageGuid, "The target message");
-        const { commandId, deduplicated } = await enqueuePhotonCommand(scope, "messages.unsend", {
+        return queuePhotonCommand(scope, "messages.unsend", {
           messageGuid: input.messageGuid,
           partIndex: input.partIndex,
         });
-        return { status: "queued", commandId, deduplicated };
-      }
       case "sendMiniApp": {
-        assertValidCardLayout(input.card.layout);
-        await assertCardImageArtifact(scope, input.card.layout);
-        const { commandId } = await enqueuePhotonCommand(
-          scope,
-          "messages.sendCustomizedMiniApp",
-          { message: input.card },
-        );
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
+        const receipt = await sendMiniAppCard(scope, input.card, ctx.abortSignal);
         const result = receipt.status === "acknowledged" ? receipt.result : undefined;
         return {
           status: receipt.status,
-          commandId,
-          session:
-            result && typeof result === "object" && "miniAppCardSession" in result
-              ? (result as Record<string, unknown>).miniAppCardSession
-              : undefined,
+          commandId: receipt.commandId,
+          session: result?.miniAppCardSession,
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };
       }
-      case "notifySilenced": {
+      case "notifySilenced":
         await assertTargetInConversation(scope, "message", input.messageGuid, "The target message");
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "messages.notifySilenced",
-          { messageGuid: input.messageGuid },
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
+        return queuePhotonCommand(scope, "messages.notifySilenced", {
+          messageGuid: input.messageGuid,
+        });
     }
   },
   toModelOutput(output) {

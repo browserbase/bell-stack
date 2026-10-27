@@ -1,17 +1,17 @@
 import { defineTool, toolOutput } from "eve/tools";
 import { z } from "zod";
 
+import { sanitizeFileName } from "../../server/photon/filename.js";
 import {
   assertTargetInConversation,
   awaitCommandResult,
   decodeMediaInput,
   enqueueArtifactUpload,
-  enqueuePhotonCommand,
   findStagedArtifact,
   modelFileInputSchema,
   photonScope,
   projectAttachmentInfo,
-  sanitizeFileName,
+  runPhotonCommand,
   uploadModelFile,
   uploadedAttachmentGuid,
 } from "../lib/photon-tools";
@@ -85,11 +85,12 @@ export default defineTool({
         const receipt = await awaitCommandResult(
           scope.store,
           upload.commandId,
+          "attachments.upload",
           undefined,
           ctx.abortSignal,
         );
         const attachmentGuid =
-          receipt.status === "acknowledged" ? uploadedAttachmentGuid(receipt.result) : undefined;
+          receipt.status === "acknowledged" ? receipt.result?.attachmentGuid : undefined;
         return {
           status: receipt.status,
           commandId: upload.commandId,
@@ -104,18 +105,15 @@ export default defineTool({
       case "download": {
         await assertTargetInConversation(scope, "attachment", input.attachmentGuid, "The attachment");
         const staged = await findStagedArtifact(scope, input.attachmentGuid);
-        const { commandId } = await enqueuePhotonCommand(scope, "attachments.get", {
-          attachmentGuid: input.attachmentGuid,
-        });
-        const receipt = await awaitCommandResult(
-          scope.store,
-          commandId,
-          undefined,
+        const receipt = await runPhotonCommand(
+          scope,
+          "attachments.get",
+          { attachmentGuid: input.attachmentGuid },
           ctx.abortSignal,
         );
         return {
           status: receipt.status,
-          commandId,
+          commandId: receipt.commandId,
           attachment:
             receipt.status === "acknowledged"
               ? (projectAttachmentInfo(receipt.result) ?? null)
@@ -143,6 +141,7 @@ export default defineTool({
         const receipt = await awaitCommandResult(
           scope.store,
           input.commandId,
+          row.operation,
           1_000,
           ctx.abortSignal,
         );

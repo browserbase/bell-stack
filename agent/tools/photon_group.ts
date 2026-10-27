@@ -4,17 +4,12 @@ import { z } from "zod";
 import type { ConversationRow } from "../../server/photon/store.js";
 import {
   artifactInConversation,
-  asRecord,
-  asString,
   assertGroupAudience,
-  awaitCommandResult,
-  coerceBytes,
-  decodeMediaInput,
-  enqueuePhotonCommand,
   modelFileInputSchema,
   photonScope,
-  sanitizeFileName,
-  uploadModelFile,
+  queuePhotonCommand,
+  resolveStagedImageArtifact,
+  runPhotonCommand,
 } from "../lib/photon-tools";
 import { assertInitiatingOwner } from "../lib/messaging-auth";
 
@@ -81,99 +76,52 @@ export default defineTool({
   async execute(input, ctx) {
     assertGroupAudience(ctx);
     const scope = await photonScope(ctx);
+    if (input.action !== "getIcon") assertMutationOwner(ctx, scope.conversation);
     switch (input.action) {
-      case "setDisplayName": {
-        assertMutationOwner(ctx, scope.conversation);
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "groups.setDisplayName",
-          { name: input.name.trim() },
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "addParticipants": {
-        assertMutationOwner(ctx, scope.conversation);
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "groups.addParticipants",
-          { addresses: input.addresses },
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "removeParticipants": {
-        assertMutationOwner(ctx, scope.conversation);
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "groups.removeParticipants",
-          { addresses: input.addresses },
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "leave": {
-        assertMutationOwner(ctx, scope.conversation);
-        const { commandId, deduplicated } = await enqueuePhotonCommand(scope, "groups.leave", {});
-        return { status: "queued", commandId, deduplicated };
-      }
+      case "setDisplayName":
+        return queuePhotonCommand(scope, "groups.setDisplayName", { name: input.name.trim() });
+      case "addParticipants":
+        return queuePhotonCommand(scope, "groups.addParticipants", { addresses: input.addresses });
+      case "removeParticipants":
+        return queuePhotonCommand(scope, "groups.removeParticipants", { addresses: input.addresses });
+      case "leave":
+        return queuePhotonCommand(scope, "groups.leave", {});
       case "setIcon": {
-        assertMutationOwner(ctx, scope.conversation);
-        let artifactId = input.artifactId;
-        if (input.file) {
-          const decoded = decodeMediaInput(input.file, scope.config.worker.maxArtifactBytes);
-          if (!GROUP_ICON_MEDIA_TYPES.has(decoded.mediaType))
-            throw new Error("Group icons must be PNG, JPEG, GIF, HEIC, or HEIF images.");
-          artifactId = (
-            await uploadModelFile(scope, {
-              data: decoded.data,
-              mediaType: decoded.mediaType,
-              fileName: sanitizeFileName(input.file.fileName, "group-icon"),
-            })
-          ).artifactId;
-        }
-        if (!artifactId) throw new Error("An artifactId or file is required.");
-        const artifact = await scope.store.getArtifact(artifactId);
-        if (!artifactInConversation(scope, artifact))
-          throw new Error("The referenced icon artifact is unavailable in this conversation.");
-        if (!GROUP_ICON_MEDIA_TYPES.has(artifact.mediaType))
-          throw new Error("Group icons must be PNG, JPEG, GIF, HEIC, or HEIF images.");
-        const { commandId, deduplicated } = await enqueuePhotonCommand(scope, "groups.setIcon", {
-          artifactId,
+        const artifactId = await resolveStagedImageArtifact(scope, input, {
+          allowedMediaTypes: GROUP_ICON_MEDIA_TYPES,
+          fallbackFileName: "group-icon",
+          typeError: "Group icons must be PNG, JPEG, GIF, HEIC, or HEIF images.",
+          missingError: "The referenced icon artifact is unavailable in this conversation.",
         });
-        return { status: "queued", commandId, deduplicated };
+        return queuePhotonCommand(scope, "groups.setIcon", { artifactId });
       }
       case "getIcon": {
-        const { commandId } = await enqueuePhotonCommand(scope, "groups.getIcon", {});
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
+        const receipt = await runPhotonCommand(scope, "groups.getIcon", {}, ctx.abortSignal);
         if (receipt.status === "failed" && receipt.errorCode && /not.?found/i.test(receipt.errorCode))
-          return { status: "acknowledged", commandId, icon: null };
-        if (receipt.status !== "acknowledged") return { status: receipt.status, commandId };
-        const record = asRecord(receipt.result);
-        const bytes = coerceBytes(record?.data);
-        if (!bytes)
-          return { status: "acknowledged", commandId, icon: null };
-        const staged = await uploadModelFile(scope, {
-          data: bytes,
-          mediaType: asString(record?.mimeType) ?? "image/png",
-          fileName: "group-icon",
-        });
+          return { status: "acknowledged", commandId: receipt.commandId, icon: null };
+        if (receipt.status !== "acknowledged")
+          return { status: receipt.status, commandId: receipt.commandId };
+        const result = receipt.result;
+        // The executor already staged the icon bytes into this
+        // conversation's artifact store — the result is the artifact
+        // reference itself, so there is nothing to re-stage.
+        if (!result || "icon" in result)
+          return { status: "acknowledged", commandId: receipt.commandId, icon: null };
+        const artifact = await scope.store.getArtifact(result.artifactId);
+        if (!artifactInConversation(scope, artifact))
+          throw new Error("The group icon artifact is unavailable in this conversation.");
         return {
           status: "acknowledged",
-          commandId,
+          commandId: receipt.commandId,
           icon: {
-            artifactId: staged.artifactId,
-            mediaType: staged.mediaType,
-            byteSize: staged.byteSize,
+            artifactId: result.artifactId,
+            mediaType: result.mimeType,
+            byteSize: result.byteSize,
           },
         };
       }
-      case "removeIcon": {
-        assertMutationOwner(ctx, scope.conversation);
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "groups.removeIcon",
-          {},
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
+      case "removeIcon":
+        return queuePhotonCommand(scope, "groups.removeIcon", {});
     }
   },
   toModelOutput(output) {

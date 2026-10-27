@@ -158,7 +158,6 @@ export function createOutbox(deps: OutboxDeps): PhotonOutbox {
     if (row.sourceId !== deps.sourceId) {
       // A source we do not own: release the claim so its worker picks it up.
       await store.completeCommand(row.commandId, "queued", {
-        claimedBy: null,
         nextAttemptAt: new Date(now().getTime() + FOREIGN_RELEASE_MS),
       });
       return;
@@ -177,7 +176,6 @@ export function createOutbox(deps: OutboxDeps): PhotonOutbox {
     const gate = await dependencyGate(row);
     if (gate === "wait") {
       await store.completeCommand(row.commandId, "queued", {
-        claimedBy: null,
         nextAttemptAt: new Date(now().getTime() + DEPENDENCY_WAIT_MS),
       });
       return;

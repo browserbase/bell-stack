@@ -1,15 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ConnectionPrincipal } from "eve/connections";
 
+import { isVerifiedPhotonPrincipal } from "../photon/principal";
+
 const requests = new Set<string>();
 const run = randomUUID();
 export const isLinkSandbox = () => process.env.LINK_SANDBOX === "1";
-const PHOTON_PRINCIPAL_PATTERN = /^photon:[0-9a-f]{8,128}$/;
 
 export function sandboxToken(principal: ConnectionPrincipal): { token: string } {
   const token = process.env.LINK_SANDBOX_ACCESS_TOKEN?.trim();
-  if (principal.type !== "user" || principal.issuer !== "photon"
-    || !PHOTON_PRINCIPAL_PATTERN.test(principal.id)
+  if (!isVerifiedPhotonPrincipal(principal)
     || principal.id !== process.env.LINK_SANDBOX_PRINCIPAL_ID?.trim())
     throw new Error("This sender is not the configured Link sandbox operator.");
   if (!token) throw new Error("Inject LINK_SANDBOX_ACCESS_TOKEN into the sandbox process.");

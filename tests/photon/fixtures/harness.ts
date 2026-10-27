@@ -189,21 +189,6 @@ export function fakeStream<T>(events: readonly T[], opts: { error?: unknown } = 
 }
 
 /* ------------------------------------------------------------------ */
-/* Optional module loader                                              */
-/* ------------------------------------------------------------------ */
-
-/**
- * Imports a pipeline module by path, returning `undefined` when it does not
- * exist yet in this worktree. The indirection keeps TypeScript from
- * statically resolving a module that parallel workstreams have not landed.
- * Specifiers resolve relative to this file (`tests/photon/fixtures/`).
- */
-export function optionalModule<T>(specifier: string): Promise<T | undefined> {
-  const load = (path: string): Promise<T> => import(path) as Promise<T>;
-  return load(specifier).catch(() => undefined);
-}
-
-/* ------------------------------------------------------------------ */
 /* In-memory PhotonDb seam                                             */
 /* ------------------------------------------------------------------ */
 
@@ -274,6 +259,10 @@ export function inMemoryDb(): PhotonDb & {
     },
     async getSource(sourceId) {
       const row = sources.get(sourceId);
+      return row ? mapSourceRow(row) : undefined;
+    },
+    async getLatestSource(projectId) {
+      const row = [...sources.values()].filter((s) => s.projectId === projectId).at(-1);
       return row ? mapSourceRow(row) : undefined;
     },
     async setSourceStatus(sourceId, status: SourceStatus) {
@@ -360,24 +349,6 @@ export function inMemoryDb(): PhotonDb & {
       row.processingState = state;
       row.attempts += 1;
       if (lastError !== undefined) row.lastError = lastError;
-    },
-    async pendingForChat(sourceId, chatGuid, limit) {
-      return [...inbox.values()]
-        .filter((row) => row.sourceId === sourceId && row.chatGuid === chatGuid
-          && row.disposition === "admitted" && row.processingState === "captured")
-        .sort((a, b) => (num(a.sequenceNum) < num(b.sequenceNum) ? -1 : 1))
-        .slice(0, limit);
-    },
-    async pendingDispatch(sourceId, limit) {
-      const firstByChat = new Map<string, InboxRow>();
-      const ordered = [...inbox.values()]
-        .filter((row) => row.sourceId === sourceId && row.disposition === "admitted" && row.processingState === "captured")
-        .sort((a, b) => (num(a.sequenceNum) < num(b.sequenceNum) ? -1 : 1));
-      for (const row of ordered) {
-        const key = row.chatGuid ?? "";
-        if (!firstByChat.has(key)) firstByChat.set(key, row);
-      }
-      return [...firstByChat.values()].slice(0, limit);
     },
     async dispatchableChatScopes(sourceId, limit) {
       const firstSeqByScope = new Map<string | null, bigint>();
@@ -583,7 +554,8 @@ export function inMemoryDb(): PhotonDb & {
       if (patch.errorDetail !== undefined) row.errorDetail = patch.errorDetail;
       if (patch.nextAttemptAt !== undefined) row.nextAttemptAt = patch.nextAttemptAt;
       if (patch.providerKey !== undefined) row.providerKey = patch.providerKey;
-      row.claimedBy = patch.claimedBy === undefined ? undefined : (patch.claimedBy ?? undefined);
+      // Mirrors SQL: claimed_by is always overwritten, never COALESCE'd.
+      row.claimedBy = patch.claimedBy;
     },
     async commandStats(sourceId) {
       const rows = [...commands.values()].filter((row) => row.sourceId === sourceId);
@@ -627,6 +599,23 @@ export function inMemoryDb(): PhotonDb & {
     },
     async getArtifact(artifactId) {
       return artifacts.get(artifactId);
+    },
+    async findArtifactByAttachment(sourceId, chatGuid, attachmentGuid) {
+      const staged = [...artifacts.values()]
+        .filter((row) => row.sourceId === sourceId && row.chatGuid === chatGuid
+          && row.attachmentGuid === attachmentGuid)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      const row = staged[0];
+      if (!row) return undefined;
+      return {
+        artifactId: row.artifactId,
+        sourceId: row.sourceId,
+        chatGuid: row.chatGuid,
+        attachmentGuid: row.attachmentGuid,
+        fileName: row.fileName,
+        mediaType: row.mediaType,
+        byteSize: row.byteSize,
+      };
     },
 
     /* -------------------------- pending interactions --------------------- */

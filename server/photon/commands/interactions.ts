@@ -52,7 +52,7 @@ export function interactionExecutors(
         clientMessageId: commandProviderKey(command),
       });
       await persistPoll(store, command.sourceId, poll);
-      return { result: poll, receipt: { pollMessageGuid: poll.pollMessageGuid } };
+      return { result: poll, providerReceipt: { pollMessageGuid: poll.pollMessageGuid } };
     }),
 
     "polls.get": executeOp("polls.get", async (client, args, command) => {

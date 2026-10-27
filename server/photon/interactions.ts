@@ -2,7 +2,6 @@ import type { PhotonEventEnvelope } from "./contracts.js";
 import { handleKey, normalizeHandle } from "./identity.js";
 import type { ConversationState } from "./policy.js";
 import type {
-  InteractionInsert,
   InteractionRow,
   PhotonDb,
 } from "./store.js";
@@ -80,16 +79,22 @@ export async function matchInboundToInteractions(
     if (!actorPermitted(interaction, actor)) continue;
     const resolution = resolutionFor(interaction, envelope, actor);
     if (!resolution) continue;
-    const didResolve = await db.resolveInteraction(interaction.interactionId, actor, resolution);
-    if (didResolve) {
-      resolved.push(interaction);
-      if (interaction.kind === "prompt" || interaction.kind === "authorization") {
-        promptResolved = true;
-        promptRequestRef = interaction.requestRef;
-      }
+    if (interaction.kind === "prompt") {
+      // Prompt rows settle in the dispatch route only after session.respond
+      // is accepted so a transient delivery failure can still retry.
+      promptResolved = true;
+      promptRequestRef = interaction.requestRef;
+      continue;
     }
+    const didResolve = await db.resolveInteraction(interaction.interactionId, actor, resolution);
+    if (didResolve) resolved.push(interaction);
   }
-  return { resolved, promptResolved, contractResolved: resolved.length > 0, promptRequestRef };
+  return {
+    resolved,
+    promptResolved,
+    contractResolved: promptResolved || resolved.length > 0,
+    promptRequestRef,
+  };
 }
 
 function resolutionFor(
@@ -146,14 +151,6 @@ function resolutionFor(
 
   // authorization interactions never resolve from an inbound event.
   return undefined;
-}
-
-/** Registers one durable prompt interaction (idempotent by requestRef). */
-export async function registerPromptInteraction(
-  db: PhotonDb,
-  input: InteractionInsert,
-): Promise<string> {
-  return db.createInteraction(input);
 }
 
 /** Expires open interactions past their deadline; returns the count. */

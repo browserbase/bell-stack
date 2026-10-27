@@ -8,18 +8,23 @@ import {
   commandArgsSchemas,
   isReadOperation,
   validateCommandArgs,
+  type AttachmentInfo,
   type PhotonCommand,
   type PhotonCommandArgs,
   type PhotonCommandOp,
+  type PhotonCommandResult,
+  type customizedMiniAppSchema,
 } from "../../server/photon/contracts.js";
-import { canonicalJson, semanticKeyFor, sha256Hex } from "../../server/photon/identity.js";
+import { sanitizeFileName } from "../../server/photon/filename.js";
+import { canonicalTupleJson, semanticKeyFor, sha256Hex } from "../../server/photon/identity.js";
 import {
-  createPhotonStore,
   type ConversationRow,
+  type PhotonDb,
   type PhotonStore,
   type ResourceKind,
 } from "../../server/photon/store.js";
 import { messagingPrincipal, type VerifiedMessagingPrincipal } from "./messaging-auth";
+import { getPhotonStore } from "./photon-store";
 
 /**
  * Shared plumbing for the Photon agent tools. Each tool verifies the
@@ -33,23 +38,6 @@ import { messagingPrincipal, type VerifiedMessagingPrincipal } from "./messaging
 /** How long a tool waits for an acknowledged/failed command before reporting pending. */
 export const COMMAND_RESULT_TIMEOUT_MS = 8_000;
 const RESULT_POLL_INTERVAL_MS = 250;
-
-let storeSingleton: PhotonStore | undefined;
-
-/**
- * Lazily creates the process-wide channel store. The Eve process and the
- * transport worker share PostgreSQL, so tool reads/writes go through the
- * same durable tables the worker drains.
- */
-export function getPhotonStore(config: PhotonConfig): PhotonStore {
-  if (!storeSingleton) {
-    storeSingleton = createPhotonStore(config.databaseUrl);
-    storeSingleton.pool.on("error", () => {
-      console.error("Photon channel store connection failed.");
-    });
-  }
-  return storeSingleton;
-}
 
 export interface PhotonToolContext {
   readonly principal: VerifiedMessagingPrincipal;
@@ -182,7 +170,7 @@ export async function enqueuePhotonCommand<Op extends PhotonCommandOp>(
     commandId,
     operation,
     args: parsed,
-    argsDigest: sha256Hex(canonicalJson([parsed])),
+    argsDigest: sha256Hex(canonicalTupleJson([parsed])),
     initiatorPrincipal: scope.principal.principal.id,
     audience: scope.principal.audience,
     sourceId: scope.conversation.sourceId,
@@ -202,12 +190,52 @@ export async function enqueuePhotonCommand<Op extends PhotonCommandOp>(
   return scope.store.enqueueCommand(command);
 }
 
+/**
+ * Enqueues a fire-and-forget mutation command and returns the standard
+ * agent-facing `{ status: "queued", commandId, deduplicated }` receipt.
+ */
+export async function queuePhotonCommand<Op extends PhotonCommandOp>(
+  ctx: ToolContext | PhotonScope,
+  operation: Op,
+  args: BoundCommandArgs<Op>,
+  opts: EnqueuePhotonOptions = {},
+): Promise<{ status: "queued"; commandId: string; deduplicated: boolean }> {
+  const { commandId, deduplicated } = await enqueuePhotonCommand(ctx, operation, args, opts);
+  return { status: "queued", commandId, deduplicated };
+}
+
+/**
+ * Enqueues a command and waits up to `COMMAND_RESULT_TIMEOUT_MS` for the
+ * worker to settle it.
+ */
+export async function runPhotonCommand<Op extends PhotonCommandOp>(
+  scope: PhotonScope,
+  operation: Op,
+  args: BoundCommandArgs<Op>,
+  signal?: AbortSignal,
+  opts: EnqueuePhotonOptions = {},
+): Promise<PhotonCommandReceipt<Op>> {
+  const { commandId } = await enqueuePhotonCommand(scope, operation, args, opts);
+  return awaitCommandResult(scope.store, commandId, operation, undefined, signal);
+}
+
 /* ------------------------------------------------------------------ */
 /* Command results                                                     */
 /* ------------------------------------------------------------------ */
 
-export type PhotonCommandReceipt =
-  | { readonly status: "acknowledged"; readonly commandId: string; readonly result?: unknown; readonly providerReceipt?: unknown }
+/**
+ * A settled (or still-running) durable command. `result` is typed by the
+ * operation the caller enqueued — the executor's emitted shape lives in
+ * `PhotonCommandResultMap`, so projections never read provider fields off
+ * the receipt root.
+ */
+export type PhotonCommandReceipt<Op extends PhotonCommandOp = PhotonCommandOp> =
+  | {
+      readonly status: "acknowledged";
+      readonly commandId: string;
+      readonly result?: PhotonCommandResult<Op>;
+      readonly providerReceipt?: unknown;
+    }
   | { readonly status: "ambiguous"; readonly commandId: string; readonly reason?: string }
   | { readonly status: "failed"; readonly commandId: string; readonly errorCode?: string }
   | { readonly status: "cancelled" | "expired"; readonly commandId: string }
@@ -218,21 +246,31 @@ export type PhotonCommandReceipt =
  * Reads ride the outbox for durability, and the Eve process shares Postgres
  * with the worker, so the result lands in the same command row. A timeout
  * returns `pending` — the caller can retry or check later without losing
- * the durable command identity.
+ * the durable command identity. `operation` is the caller-declared op: it
+ * types the returned `result` and must match the op that was enqueued —
+ * awaiting a command row under the wrong op is a caller bug and throws.
  */
-export async function awaitCommandResult(
-  store: PhotonStore,
+export async function awaitCommandResult<Op extends PhotonCommandOp>(
+  store: PhotonDb,
   commandId: string,
+  operation: Op,
   timeoutMs = COMMAND_RESULT_TIMEOUT_MS,
   signal?: AbortSignal,
-): Promise<PhotonCommandReceipt> {
+): Promise<PhotonCommandReceipt<Op>> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     signal?.throwIfAborted();
     const row = await store.getCommand(commandId);
+    if (row && row.operation !== operation)
+      throw new Error(`Command ${commandId} is ${row.operation}, not ${operation}.`);
     switch (row?.status) {
       case "acknowledged":
-        return { status: "acknowledged", commandId, result: row.result, providerReceipt: row.providerReceipt };
+        return {
+          status: "acknowledged",
+          commandId,
+          result: row.result as PhotonCommandResult<Op> | undefined,
+          providerReceipt: row.providerReceipt,
+        };
       case "ambiguous":
         return { status: "ambiguous", commandId, reason: row.errorDetail ?? row.errorCode };
       case "failed":
@@ -267,12 +305,6 @@ export const modelFileInputSchema = z
   });
 export type ModelFileInput = z.infer<typeof modelFileInputSchema>;
 
-/** Strips path components and control characters from a display filename. */
-export function sanitizeFileName(name: string | undefined, fallback = "attachment"): string {
-  const base = (name ?? "").split(/[\\/]/).pop()?.trim() ?? "";
-  const cleaned = base.replace(/[\r\n\t\x00-\x1f]/g, "").slice(0, 255);
-  return cleaned || fallback;
-}
 
 function decodeBase64Bytes(value: string, limit: number, field: string): Uint8Array {
   const compact = value.replace(/\s+/g, "");
@@ -356,29 +388,17 @@ export interface StagedArtifactRef {
 
 /**
  * Finds the newest artifact staged for a provider attachment GUID in this
- * conversation. The store facade has no attachment-guid lookup, so this is
- * a narrow metadata-only query on the shared table.
+ * conversation — metadata only, through the store facade.
  */
 export async function findStagedArtifact(
   scope: PhotonScope,
   attachmentGuid: string,
 ): Promise<StagedArtifactRef | undefined> {
-  const result = await scope.store.pool.query(
-    `SELECT artifact_id, attachment_guid, file_name, media_type, byte_size
-       FROM bell_photon_artifacts
-      WHERE source_id = $1 AND chat_guid = $2 AND attachment_guid = $3
-      ORDER BY created_at DESC LIMIT 1`,
-    [scope.conversation.sourceId, scope.conversation.chatGuid, attachmentGuid],
+  return scope.store.findArtifactByAttachment(
+    scope.conversation.sourceId,
+    scope.conversation.chatGuid,
+    attachmentGuid,
   );
-  const row = result.rows[0];
-  if (!row) return undefined;
-  return {
-    artifactId: row.artifact_id as string,
-    attachmentGuid: (row.attachment_guid as string | null) ?? undefined,
-    fileName: (row.file_name as string | null) ?? undefined,
-    mediaType: row.media_type as string,
-    byteSize: Number(row.byte_size),
-  };
 }
 
 /** Whether an artifact row belongs to this conversation's source and chat. */
@@ -416,13 +436,15 @@ export async function enqueueArtifactUpload(
   );
 }
 
-/** Extracts the provider attachment GUID from an upload command result. */
-export function uploadedAttachmentGuid(result: unknown): string | undefined {
-  const record = asRecord(result);
-  if (!record) return undefined;
-  const attachment = asRecord(record.attachment);
-  const guid = asString(attachment?.guid) ?? asString(record.attachmentGuid) ?? asString(record.guid);
-  return guid && guid.length > 0 ? guid : undefined;
+/**
+ * Extracts the provider attachment GUID from a command result. Only the
+ * `attachments.upload` member of the result map carries `attachmentGuid`;
+ * status probes on other ops simply resolve `undefined`.
+ */
+export function uploadedAttachmentGuid(
+  result: PhotonCommandResult<PhotonCommandOp> | undefined,
+): string | undefined {
+  return result && "attachmentGuid" in result ? result.attachmentGuid : undefined;
 }
 
 export type ResolvedAttachment =
@@ -466,11 +488,65 @@ export async function resolveAttachmentGuid(
     artifactId,
     fileName: artifact.fileName ?? "attachment",
   });
-  const receipt = await awaitCommandResult(scope.store, upload.commandId, undefined, signal);
-  const guid = receipt.status === "acknowledged" ? uploadedAttachmentGuid(receipt.result) : undefined;
+  const receipt = await awaitCommandResult(
+    scope.store,
+    upload.commandId,
+    "attachments.upload",
+    undefined,
+    signal,
+  );
+  const guid = receipt.status === "acknowledged" ? receipt.result?.attachmentGuid : undefined;
   if (receipt.status === "acknowledged" && guid)
     return { resolved: true, attachmentGuid: guid, dependsOn: [upload.commandId] };
   return { resolved: false, receipt };
+}
+
+/**
+ * Stages inline file bytes (when supplied) or validates an existing staged
+ * artifactId against the conversation scope and an allowed media-type set.
+ */
+export async function resolveStagedImageArtifact(
+  scope: PhotonScope,
+  input: { artifactId?: string; file?: ModelFileInput },
+  options: {
+    readonly allowedMediaTypes: ReadonlySet<string>;
+    readonly fallbackFileName: string;
+    readonly typeError: string;
+    readonly missingError: string;
+  },
+): Promise<string> {
+  let artifactId = input.artifactId;
+  if (input.file) {
+    const decoded = decodeMediaInput(input.file, scope.config.worker.maxArtifactBytes);
+    if (!options.allowedMediaTypes.has(decoded.mediaType.toLowerCase()))
+      throw new Error(options.typeError);
+    artifactId = (
+      await uploadModelFile(scope, {
+        data: decoded.data,
+        mediaType: decoded.mediaType,
+        fileName: sanitizeFileName(input.file.fileName, options.fallbackFileName),
+      })
+    ).artifactId;
+  }
+  if (!artifactId) throw new Error("An artifactId or file is required.");
+  const artifact = await scope.store.getArtifact(artifactId);
+  if (!artifactInConversation(scope, artifact)) throw new Error(options.missingError);
+  if (!options.allowedMediaTypes.has(artifact.mediaType.toLowerCase()))
+    throw new Error(options.typeError);
+  return artifactId;
+}
+
+/** Standard tool output when a dependent media upload has not settled yet. */
+export function uploadPendingResponse(receipt: PhotonCommandReceipt, label: string) {
+  return {
+    status: receipt.status,
+    commandId: receipt.commandId,
+    stage: "upload" as const,
+    detail:
+      receipt.status === "pending" || receipt.status === "ambiguous"
+        ? `The ${label} upload is still in flight. Retry once it is acknowledged.`
+        : `The ${label} upload did not complete.`,
+  };
 }
 
 /**
@@ -523,9 +599,24 @@ export async function assertCardImageArtifact(
     throw new Error("The card image must be a staged JPEG artifact (mediaType image/jpeg).");
 }
 
+/** Validates and sends a customized mini-app card, awaiting the card session. */
+export async function sendMiniAppCard(
+  scope: PhotonScope,
+  card: z.infer<typeof customizedMiniAppSchema>,
+  signal?: AbortSignal,
+): Promise<PhotonCommandReceipt<"messages.sendCustomizedMiniApp">> {
+  assertValidCardLayout(card.layout);
+  await assertCardImageArtifact(scope, card.layout);
+  return runPhotonCommand(scope, "messages.sendCustomizedMiniApp", { message: card }, signal);
+}
+
 /* ------------------------------------------------------------------ */
 /* Target and payload safety                                           */
 /* ------------------------------------------------------------------ */
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
 
 /**
  * Verifies a message/poll/attachment GUID belongs to this conversation
@@ -546,7 +637,7 @@ export async function assertTargetInConversation(
     return;
   }
   const data = resource.data;
-  const single = asString(data.chatGuid) ?? asString(data.chat_guid);
+  const single = nonEmptyString(data.chatGuid) ?? nonEmptyString(data.chat_guid);
   const list = Array.isArray(data.chatGuids)
     ? data.chatGuids.filter((value): value is string => typeof value === "string")
     : [];
@@ -557,73 +648,31 @@ export async function assertTargetInConversation(
   if (group) throw new Error(`${label} cannot be verified against this conversation.`);
 }
 
-/**
- * Best-effort coercion of JSON-round-tripped byte payloads (base64 string,
- * byte array, Buffer JSON, or {0..n} maps) returned inside command results.
- */
-export function coerceBytes(value: unknown): Uint8Array | undefined {
-  if (value instanceof Uint8Array) return value;
-  if (typeof value === "string" && value.length > 0) return Buffer.from(value, "base64");
-  if (Array.isArray(value)) {
-    return value.every((entry) => typeof entry === "number")
-      ? Uint8Array.from(value as number[])
-      : undefined;
-  }
-  const record = asRecord(value);
-  if (record) {
-    if (record.type === "Buffer" && Array.isArray(record.data))
-      return Uint8Array.from(record.data as number[]);
-    const keys = Object.keys(record);
-    if (keys.length > 0 && keys.every((key) => /^\d+$/.test(key))) {
-      const out = new Uint8Array(keys.length);
-      for (const key of keys) out[Number(key)] = Number(record[key]);
-      return out;
-    }
-  }
-  return undefined;
-}
-
 /* ------------------------------------------------------------------ */
 /* Compact JSON projections                                            */
 /* ------------------------------------------------------------------ */
 
-export function asString(value: unknown): string | undefined {
+export function isoTimestamp(value: Date | string | null | undefined): string | undefined {
+  if (value instanceof Date) return value.toISOString();
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-export function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-export function asBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}
-
-export function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-export function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
 /** Bounded, agent-facing projection of provider AttachmentInfo. */
-export function projectAttachmentInfo(value: unknown): Record<string, unknown> | undefined {
-  const info = asRecord(value);
+export function projectAttachmentInfo(
+  info: AttachmentInfo | undefined,
+): Record<string, unknown> | undefined {
   if (!info) return undefined;
   return {
-    guid: asString(info.guid),
-    fileName: asString(info.fileName),
-    mimeType: asString(info.mimeType),
-    uti: asString(info.uti),
-    totalBytes: asNumber(info.totalBytes),
-    transferState: asString(info.transferState),
-    isHidden: asBoolean(info.isHidden),
-    isOutgoing: asBoolean(info.isOutgoing),
-    isSticker: asBoolean(info.isSticker),
-    companionKind: asString(info.companionKind),
-    originalGuid: asString(info.originalGuid),
+    guid: info.guid,
+    fileName: info.fileName,
+    mimeType: info.mimeType,
+    uti: info.uti,
+    totalBytes: info.totalBytes,
+    transferState: info.transferState,
+    isHidden: info.isHidden,
+    isOutgoing: info.isOutgoing,
+    isSticker: info.isSticker,
+    companionKind: info.companionKind,
+    originalGuid: info.originalGuid,
   };
 }

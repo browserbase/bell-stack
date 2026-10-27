@@ -3,7 +3,6 @@ import {
   MessageEffect,
   type AdvancedIMessage,
   type MessagePart,
-  type SendOptions,
   type SettableMessageReaction,
   type TextEffect,
   type TextFormatInput,
@@ -20,9 +19,9 @@ import {
   type PhotonCommandDeps,
   type PhotonCommandExecutor,
   type PhotonCommandOp,
+  type PhotonCommandResult,
   type effectSchema,
   type messagePartSchema,
-  type replyTargetSchema,
   type settableReactionSchema,
   type textEffectSchema,
   type textFormatSchema,
@@ -55,10 +54,6 @@ const EFFECTS = MessageEffect as unknown as Record<string, MessageEffect>;
 
 export function mapEffect(effect: z.infer<typeof effectSchema> | undefined): MessageEffect | undefined {
   return effect === undefined ? undefined : EFFECTS[effect];
-}
-
-export function mapReplyTo(replyTo: z.infer<typeof replyTargetSchema> | undefined): SendOptions["replyTo"] {
-  return replyTo;
 }
 
 export function mapReaction(
@@ -109,9 +104,9 @@ export type ReconcileFn = (
   deps: PhotonCommandDeps,
 ) => Promise<boolean | undefined>;
 
-interface OpResult {
-  readonly result?: unknown;
-  readonly receipt?: unknown;
+interface OpResult<Op extends PhotonCommandOp> {
+  readonly result?: PhotonCommandResult<Op>;
+  readonly providerReceipt?: unknown;
 }
 
 /**
@@ -127,16 +122,18 @@ export class CommandValidationError extends Error {
   }
 }
 
-async function reconcileOrAmbiguous(
+async function reconcileOrAmbiguous<Op extends PhotonCommandOp>(
   code: string,
   detail: string,
   command: PhotonCommand,
   deps: PhotonCommandDeps,
   reconcile: ReconcileFn | undefined,
-): Promise<CommandExecution> {
+): Promise<CommandExecution<Op>> {
   if (reconcile) {
     const state = await reconcile(command, deps).catch(() => undefined);
-    if (state === true) return { kind: "acknowledged", result: { reconciled: true } };
+    // The "reconciled" marker rides in providerReceipt so the typed result
+    // shape is never polluted by a synthetic value no executor produced.
+    if (state === true) return { kind: "acknowledged", providerReceipt: { reconciled: true } };
     if (state === false)
       return { kind: "retryable", errorCode: code, errorDetail: `${detail} (reconcile: not applied)` };
   }
@@ -145,13 +142,13 @@ async function reconcileOrAmbiguous(
   return { kind: "ambiguous", reason: detail };
 }
 
-async function classify(
+async function classify<Op extends PhotonCommandOp>(
   command: PhotonCommand,
   deps: PhotonCommandDeps,
-  op: PhotonCommandOp,
+  op: Op,
   error: unknown,
   reconcile: ReconcileFn | undefined,
-): Promise<CommandExecution> {
+): Promise<CommandExecution<Op>> {
   const detail = error instanceof Error ? error.message : String(error);
   const keyed = KEYED_OPERATIONS.has(op);
   const read = isReadOperation(op);
@@ -186,9 +183,9 @@ export function executeOp<Op extends PhotonCommandOp>(
     args: PhotonCommandArgs<Op>,
     command: PhotonCommand,
     deps: PhotonCommandDeps,
-  ) => Promise<OpResult>,
+  ) => Promise<OpResult<Op>>,
   reconcile?: ReconcileFn,
-): PhotonCommandExecutor {
+): PhotonCommandExecutor<Op> {
   return async (command, deps) => {
     const args = commandArgsSchemas[op].parse(command.args) as PhotonCommandArgs<Op>;
     try {

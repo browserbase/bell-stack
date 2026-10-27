@@ -14,8 +14,8 @@ import {
   eventTargetGuid,
   normalizeLiveEvent,
 } from "./normalize.js";
-import { admitEvent, type ConversationState } from "./policy.js";
-import type { ConversationRow, PhotonStore } from "./store.js";
+import { admitEvent, toConversationState } from "./policy.js";
+import type { PhotonStore } from "./store.js";
 
 /**
  * Transport supervisor for ONE enrolled source. Owns the four unfiltered
@@ -83,19 +83,6 @@ function sleep(ms: number): Promise<void> {
 function backoff(failures: number): number {
   const exp = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** Math.min(failures, 6));
   return Math.floor(exp * (0.5 + Math.random() * 0.5));
-}
-
-function toConversationState(row: ConversationRow | undefined): ConversationState | undefined {
-  if (!row) return undefined;
-  return {
-    bindingId: row.bindingId,
-    scope: row.scope,
-    generation: row.generation,
-    membership: row.membership,
-    membershipVersion: row.membershipVersion,
-    initiatingPrincipal: row.initiatingPrincipal,
-    retiredAt: row.retiredAt,
-  };
 }
 
 /** Location envelopes live outside the durable sequence domain. */

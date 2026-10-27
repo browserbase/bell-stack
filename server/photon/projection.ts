@@ -250,6 +250,10 @@ export function projectEvent(ctx: ProjectionContext, event: EveStreamEvent): Pro
           kind: "prompt",
           target: { requestId: requestId ?? null, inputKind: kind },
           responseMapping: {
+            options: options.map((o, i) => ({
+              id: typeof o.id === "string" && o.id.length > 0 ? o.id : String(i + 1),
+              label: typeof o.label === "string" && o.label.length > 0 ? o.label : String(o.id ?? i + 1),
+            })),
             optionIds: options.map((o) => String(o.id ?? "")),
             labels: options.map((o) => String(o.label ?? "")),
           },

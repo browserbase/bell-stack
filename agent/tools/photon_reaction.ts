@@ -7,10 +7,11 @@ import {
 } from "../../server/photon/contracts.js";
 import {
   assertTargetInConversation,
-  enqueuePhotonCommand,
   modelFileInputSchema,
   photonScope,
+  queuePhotonCommand,
   resolveAttachmentGuid,
+  uploadPendingResponse,
 } from "../lib/photon-tools";
 
 const guid = z.string().min(1).max(512);
@@ -58,24 +59,17 @@ export default defineTool({
   inputSchema,
   async execute(input, ctx) {
     const scope = await photonScope(ctx);
+    await assertTargetInConversation(scope, "message", input.messageGuid, "The target message");
     switch (input.action) {
       case "set":
-      case "remove": {
-        await assertTargetInConversation(scope, "message", input.messageGuid, "The target message");
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "messages.setReaction",
-          {
-            messageGuid: input.messageGuid,
-            reaction: input.reaction,
-            isSet: input.action === "set",
-            partIndex: input.partIndex,
-          },
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
+      case "remove":
+        return queuePhotonCommand(scope, "messages.setReaction", {
+          messageGuid: input.messageGuid,
+          reaction: input.reaction,
+          isSet: input.action === "set",
+          partIndex: input.partIndex,
+        });
       case "placeSticker": {
-        await assertTargetInConversation(scope, "message", input.messageGuid, "The target message");
         const resolved = await resolveAttachmentGuid(
           scope,
           {
@@ -85,19 +79,9 @@ export default defineTool({
           },
           ctx.abortSignal,
         );
-        if (!resolved.resolved) {
-          const receipt = resolved.receipt;
-          return {
-            status: receipt.status,
-            commandId: receipt.commandId,
-            stage: "upload",
-            detail:
-              receipt.status === "pending" || receipt.status === "ambiguous"
-                ? "The sticker upload is still in flight. Retry once it is acknowledged."
-                : "The sticker upload did not complete.",
-          };
-        }
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
+        if (!resolved.resolved)
+          return uploadPendingResponse(resolved.receipt, "sticker");
+        return queuePhotonCommand(
           scope,
           "messages.placeSticker",
           {
@@ -108,7 +92,6 @@ export default defineTool({
           },
           { dependsOn: resolved.dependsOn },
         );
-        return { status: "queued", commandId, deduplicated };
       }
     }
   },

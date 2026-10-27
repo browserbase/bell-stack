@@ -1,21 +1,18 @@
 import { defineTool, toolOutput } from "eve/tools";
 import { z } from "zod";
 
-import { backgroundPresetSchema, effectSchema } from "../../server/photon/contracts.js";
 import {
-  artifactInConversation,
-  asArray,
-  asNumber,
-  asRecord,
-  asString,
+  backgroundPresetSchema,
+  effectSchema,
+  type Chat,
+} from "../../server/photon/contracts.js";
+import {
   assertPrivateAudience,
-  awaitCommandResult,
-  decodeMediaInput,
-  enqueuePhotonCommand,
   modelFileInputSchema,
   photonScope,
-  sanitizeFileName,
-  uploadModelFile,
+  queuePhotonCommand,
+  resolveStagedImageArtifact,
+  runPhotonCommand,
 } from "../lib/photon-tools";
 
 const BACKGROUND_MEDIA_TYPES = new Set([
@@ -72,25 +69,21 @@ const inputSchema = z.discriminatedUnion("action", [
 ]);
 
 /** Compact projection of a provider Chat snapshot for the model. */
-function projectChat(value: unknown): Record<string, unknown> | undefined {
-  const chat = asRecord(value);
+function projectChat(chat: Chat | undefined): Record<string, unknown> | undefined {
   if (!chat) return undefined;
   return {
-    guid: asString(chat.guid),
-    displayName: asString(chat.displayName),
+    guid: chat.guid,
+    displayName: chat.displayName,
     isGroup: chat.isGroup === true,
-    service: asString(chat.service),
+    service: chat.service,
     isArchived: chat.isArchived === true,
     isFiltered: chat.isFiltered === true,
-    unreadCount: asNumber(chat.unreadCount),
-    participants: asArray(chat.participants).map((entry) => {
-      const participant = asRecord(entry);
-      return {
-        address: asString(participant?.address),
-        service: asString(participant?.service),
-        country: asString(participant?.country),
-      };
-    }),
+    unreadCount: chat.unreadCount,
+    participants: (chat.participants ?? []).map((participant) => ({
+      address: participant.address,
+      service: participant.service,
+      country: participant.country,
+    })),
   };
 }
 
@@ -103,122 +96,79 @@ export default defineTool({
     const scope = await photonScope(ctx);
     switch (input.action) {
       case "get": {
-        const { commandId } = await enqueuePhotonCommand(scope, "chats.get", {});
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
+        const receipt = await runPhotonCommand(scope, "chats.get", {}, ctx.abortSignal);
         return {
           status: receipt.status,
-          commandId,
+          commandId: receipt.commandId,
           chat: receipt.status === "acknowledged" ? projectChat(receipt.result) : undefined,
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };
       }
       case "count": {
-        const { commandId } = await enqueuePhotonCommand(scope, "chats.count", {
-          includeArchived: input.includeArchived,
-        });
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
-        const raw = receipt.status === "acknowledged" ? receipt.result : undefined;
+        const receipt = await runPhotonCommand(
+          scope,
+          "chats.count",
+          { includeArchived: input.includeArchived },
+          ctx.abortSignal,
+        );
         return {
           status: receipt.status,
-          commandId,
-          count: typeof raw === "number" ? raw : asNumber(asRecord(raw)?.count),
+          commandId: receipt.commandId,
+          count: receipt.status === "acknowledged" ? receipt.result?.count : undefined,
         };
       }
-      case "markRead": {
-        const { commandId, deduplicated } = await enqueuePhotonCommand(scope, "chats.markRead", {});
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "setTyping": {
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
+      case "markRead":
+        return queuePhotonCommand(scope, "chats.markRead", {});
+      case "setTyping":
+        return queuePhotonCommand(
           scope,
           "chats.setTyping",
           { isTyping: input.isTyping },
           { expiresAt: new Date(Date.now() + TYPING_COMMAND_TTL_MS).toISOString() },
         );
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "shareContactInfo": {
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "chats.shareContactInfo",
-          {},
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
+      case "shareContactInfo":
+        return queuePhotonCommand(scope, "chats.shareContactInfo", {});
       case "hasBackground": {
-        const { commandId } = await enqueuePhotonCommand(scope, "chats.hasBackground", {});
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
-        const raw = receipt.status === "acknowledged" ? receipt.result : undefined;
-        const record = asRecord(raw);
+        const receipt = await runPhotonCommand(scope, "chats.hasBackground", {}, ctx.abortSignal);
         return {
           status: receipt.status,
-          commandId,
+          commandId: receipt.commandId,
           hasBackground:
-            typeof raw === "boolean"
-              ? raw
-              : typeof record?.hasBackground === "boolean"
-                ? record.hasBackground
-                : undefined,
+            receipt.status === "acknowledged" ? receipt.result?.hasBackground : undefined,
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };
       }
       case "setBackground": {
-        if (input.preset !== undefined) {
-          const { commandId, deduplicated } = await enqueuePhotonCommand(
-            scope,
-            "chats.setBackground",
-            { preset: input.preset },
-          );
-          return { status: "queued", commandId, deduplicated };
-        }
-        let artifactId = input.artifactId;
-        if (input.file) {
-          const decoded = decodeMediaInput(input.file, scope.config.worker.maxArtifactBytes);
-          if (!BACKGROUND_MEDIA_TYPES.has(decoded.mediaType))
-            throw new Error("Chat backgrounds must be JPEG, PNG, HEIC, or HEIF images.");
-          artifactId = (
-            await uploadModelFile(scope, {
-              data: decoded.data,
-              mediaType: decoded.mediaType,
-              fileName: sanitizeFileName(input.file.fileName, "background"),
-            })
-          ).artifactId;
-        }
-        if (!artifactId) throw new Error("A preset, artifactId, or file is required.");
-        const artifact = await scope.store.getArtifact(artifactId);
-        if (!artifactInConversation(scope, artifact))
-          throw new Error("The referenced background artifact is unavailable in this conversation.");
-        if (!BACKGROUND_MEDIA_TYPES.has(artifact.mediaType))
-          throw new Error("Chat backgrounds must be JPEG, PNG, HEIC, or HEIF images.");
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "chats.setBackground",
-          { artifactId },
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "removeBackground": {
-        const { commandId, deduplicated } = await enqueuePhotonCommand(
-          scope,
-          "chats.removeBackground",
-          {},
-        );
-        return { status: "queued", commandId, deduplicated };
-      }
-      case "create": {
-        const { commandId } = await enqueuePhotonCommand(scope, "chats.create", {
-          addresses: input.addresses,
-          message: input.message,
-          subject: input.subject,
-          effect: input.effect,
+        if (input.preset !== undefined)
+          return queuePhotonCommand(scope, "chats.setBackground", { preset: input.preset });
+        const artifactId = await resolveStagedImageArtifact(scope, input, {
+          allowedMediaTypes: BACKGROUND_MEDIA_TYPES,
+          fallbackFileName: "background",
+          typeError: "Chat backgrounds must be JPEG, PNG, HEIC, or HEIF images.",
+          missingError: "The referenced background artifact is unavailable in this conversation.",
         });
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
-        const result = asRecord(receipt.status === "acknowledged" ? receipt.result : undefined);
+        return queuePhotonCommand(scope, "chats.setBackground", { artifactId });
+      }
+      case "removeBackground":
+        return queuePhotonCommand(scope, "chats.removeBackground", {});
+      case "create": {
+        const receipt = await runPhotonCommand(
+          scope,
+          "chats.create",
+          {
+            addresses: input.addresses,
+            message: input.message,
+            subject: input.subject,
+            effect: input.effect,
+          },
+          ctx.abortSignal,
+        );
+        const result = receipt.status === "acknowledged" ? receipt.result : undefined;
         return {
           status: receipt.status,
-          commandId,
+          commandId: receipt.commandId,
           chat: projectChat(result?.chat),
-          initialMessageGuid: asString(asRecord(result?.initialMessage)?.guid),
+          initialMessageGuid: result?.initialMessageGuid,
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };
       }

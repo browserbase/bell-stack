@@ -4,7 +4,7 @@ import { z } from "zod";
 import { onePasswordVault } from "../../server/browser/vault/onepassword.js";
 import { nativeVault } from "../../server/browser/vault/native.js";
 import { runBrowserOperation, runCancelableBrowserWork } from "../lib/browser-runtime";
-import { verifiedMessagingPrincipal } from "../lib/messaging-auth";
+import { messagingPrincipal } from "../lib/messaging-auth";
 import { taskState } from "../lib/task-state";
 
 const selector = z.string().min(1).max(500);
@@ -26,7 +26,7 @@ export default defineTool({
   async execute(input, ctx) {
     // Shared operator vaults are denied to every messaging principal — direct
     // and group audiences alike.
-    if (verifiedMessagingPrincipal(ctx.session.auth?.current)) throw new Error("Shared operator vaults are not available over iMessage. Use onepassword_login for personal credentials.");
+    if (messagingPrincipal(ctx)) throw new Error("Shared operator vaults are not available over iMessage. Use onepassword_login for personal credentials.");
     const readLogin = () => {
       if (input.provider === "native") return nativeVault.login(input.itemId);
       if (!input.vaultId) throw new Error("A vault ID is required for a 1Password login.");

@@ -2,14 +2,9 @@ import { defineTool, toolOutput } from "eve/tools";
 import { z } from "zod";
 
 import {
-  asArray,
-  asBoolean,
-  asRecord,
-  asString,
   assertPrivateAudience,
-  awaitCommandResult,
-  enqueuePhotonCommand,
   photonScope,
+  runPhotonCommand,
 } from "../lib/photon-tools";
 
 const address = z.string().min(3).max(320);
@@ -29,63 +24,58 @@ export default defineTool({
     const scope = await photonScope(ctx);
     switch (input.action) {
       case "get": {
-        const { commandId } = await enqueuePhotonCommand(scope, "addresses.get", {
-          address: input.address,
-        });
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
-        const record = asRecord(receipt.status === "acknowledged" ? receipt.result : undefined);
+        const receipt = await runPhotonCommand(
+          scope,
+          "addresses.get",
+          { address: input.address },
+          ctx.abortSignal,
+        );
+        const result = receipt.status === "acknowledged" ? receipt.result : undefined;
         return {
           status: receipt.status,
-          commandId,
+          commandId: receipt.commandId,
+          found: result?.found,
           address:
-            record === undefined
+            result === undefined
               ? undefined
-              : {
-                  address: asString(record.address),
-                  country:
-                    typeof record.country === "string" || record.country === null
-                      ? record.country
-                      : undefined,
-                  services: asArray(record.services).filter(
-                    (entry): entry is string => typeof entry === "string",
-                  ),
-                },
+              : result.found
+                ? {
+                    address: result.info.address,
+                    country: result.info.country,
+                    services: [...result.info.services],
+                  }
+                : { address: result.address, country: null, services: [] },
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };
       }
       case "isIMessageAvailable": {
-        const { commandId } = await enqueuePhotonCommand(scope, "addresses.isIMessageAvailable", {
-          address: input.address,
-        });
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
-        const raw = receipt.status === "acknowledged" ? receipt.result : undefined;
-        const record = asRecord(raw);
+        const receipt = await runPhotonCommand(
+          scope,
+          "addresses.isIMessageAvailable",
+          { address: input.address },
+          ctx.abortSignal,
+        );
+        const result = receipt.status === "acknowledged" ? receipt.result : undefined;
         return {
           status: receipt.status,
-          commandId,
-          available:
-            asBoolean(record?.available) ??
-            asBoolean(record?.isIMessageAvailable) ??
-            asBoolean(raw),
+          commandId: receipt.commandId,
+          available: result?.available,
           note: "Availability preflight only — not a delivery guarantee.",
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };
       }
       case "isFocusSilenced": {
-        const { commandId } = await enqueuePhotonCommand(scope, "addresses.isFocusSilenced", {
-          address: input.address,
-        });
-        const receipt = await awaitCommandResult(scope.store, commandId, undefined, ctx.abortSignal);
-        const raw = receipt.status === "acknowledged" ? receipt.result : undefined;
-        const record = asRecord(raw);
+        const receipt = await runPhotonCommand(
+          scope,
+          "addresses.isFocusSilenced",
+          { address: input.address },
+          ctx.abortSignal,
+        );
+        const result = receipt.status === "acknowledged" ? receipt.result : undefined;
         return {
           status: receipt.status,
-          commandId,
-          silenced:
-            asBoolean(record?.silenced) ??
-            asBoolean(record?.isFocusSilenced) ??
-            asBoolean(raw),
-          reportedAt: asString(record?.reportedAt) ?? asString(record?.timestamp),
+          commandId: receipt.commandId,
+          silenced: result?.silenced,
           note: "Live Focus snapshot — not a persistent preference or permission for Notify Anyway.",
           errorCode: receipt.status === "failed" ? receipt.errorCode : undefined,
         };

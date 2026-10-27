@@ -5,6 +5,7 @@
  * command ops; the remaining six are streaming/lifecycle methods consumed by
  * the transport worker, never queued as commands.
  */
+import { IMessageError } from "@photon-ai/advanced-imessage/grpc";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -13,8 +14,14 @@ import {
   commandArgsSchemas,
   isReadOperation,
   validateCommandArgs,
+  type PhotonCommand,
+  type PhotonCommandDeps,
   type PhotonCommandOp,
+  type PhotonCommandResultMap,
 } from "../../server/photon/contracts";
+import { conversationExecutors } from "../../server/photon/commands/conversations";
+import { locationExecutors } from "../../server/photon/commands/locations";
+import { inMemoryDb } from "./fixtures/harness";
 
 const GUID = "iMessage;-;+12025550123";
 const MSG = "msg-guid-0001";
@@ -133,6 +140,122 @@ describe("command catalog completeness", () => {
 
   it.each(EXPECTED_OPERATIONS)("accepts a valid argument payload for %s", (op) => {
     expect(() => validateCommandArgs(op, POSITIVE[op])).not.toThrow();
+  });
+});
+
+/**
+ * Tool-level result mapping: `PhotonCommandResultMap` declares what each op's
+ * executor emits and what the tool layer reads off `receipt.result`. The
+ * sample fixtures are checked per-op at typecheck, so a contract drift fails
+ * `pnpm typecheck`; the runtime assertions pin the JSON field names the
+ * model actually sees. The six projections this pins were the confirmed
+ * empty-output defects — icon/media artifact ids, found/location/info
+ * lookups, create's initialMessageGuid, and the mini-app session.
+ */
+const RESULT_SAMPLES = {
+  "groups.getIcon": { artifactId: ART, mimeType: "image/png", byteSize: 128 },
+  "messages.getEmbeddedMedia": { artifactId: ART, mediaType: "image/png", byteSize: 128 },
+  "attachments.upload": { attachmentGuid: ATT, transferState: "sent", totalBytes: 128 },
+  "addresses.get": { found: false, address: ADDR },
+  "locations.get": { found: false, address: ADDR },
+  "chats.count": { count: 2 },
+  "chats.hasBackground": { hasBackground: true },
+} satisfies Partial<PhotonCommandResultMap>;
+
+type AssertTrue<T extends true> = T;
+/** True when any union member of the op's result carries `field`. */
+type ResultCarries<Op extends PhotonCommandOp, Field extends string> =
+  PhotonCommandResultMap[Op] extends infer R
+    ? true extends (R extends unknown ? (Field extends keyof R ? true : false) : never)
+      ? true
+      : false
+    : never;
+
+/* Compile-time assertions for SDK-typed results with no writable fixture.
+ * Kept as a value only because `pnpm typecheck` is the enforcement; the
+ * `void` marks that nothing is asserted on the literal trues at runtime. */
+const RESULT_FIELD_CHECKS: [
+  AssertTrue<ResultCarries<"chats.create", "initialMessageGuid">>,
+  AssertTrue<ResultCarries<"messages.sendCustomizedMiniApp", "miniAppCardSession">>,
+  AssertTrue<ResultCarries<"messages.updateCustomizedMiniApp", "miniAppCardSession">>,
+  AssertTrue<ResultCarries<"groups.getIcon", "artifactId">>,
+  AssertTrue<ResultCarries<"messages.getEmbeddedMedia", "artifactId">>,
+  AssertTrue<Extract<PhotonCommandResultMap["addresses.get"], { found: true }> extends { info: unknown } ? true : false>,
+  AssertTrue<Extract<PhotonCommandResultMap["locations.get"], { found: true }> extends { location: unknown } ? true : false>,
+] = [true, true, true, true, true, true, true];
+void RESULT_FIELD_CHECKS;
+
+/** Minimal durable command row for driving one real executor. */
+function commandFor(operation: PhotonCommandOp, args: unknown): PhotonCommand {
+  return {
+    commandId: `cmd-${operation}`, operation,
+    args: args as PhotonCommand["args"], argsDigest: "test-digest",
+    sourceId: "src-1", chatGuid: GUID, semanticKey: `sem-${operation}`,
+    dependsOn: [],
+  };
+}
+
+/** Executor deps whose `raw` is a per-test stub of the SDK surface. */
+function depsFor(raw: unknown): PhotonCommandDeps {
+  return {
+    client: { sendText: () => Promise.resolve(undefined), raw },
+    artifacts: {
+      get: () => Promise.resolve(undefined),
+      put: () => Promise.resolve("art:unused"),
+    },
+    config: { projectId: "test-project-0001" },
+    now: () => new Date("2025-01-01T00:00:00Z"),
+  };
+}
+
+function sdkError(code: IMessageError["code"]): IMessageError {
+  return new IMessageError("provider says no", { code, grpcCode: 5, retryable: false });
+}
+
+describe("tool result contract", () => {
+  it("declares a result shape for every command op", () => {
+    const complete: [Exclude<PhotonCommandOp, keyof PhotonCommandResultMap>] extends [never]
+      ? true
+      : never = true;
+    expect(complete).toBe(true);
+  });
+
+  it("addresses.get emits the declared found and not-found shapes", async () => {
+    const executor = locationExecutors({ setLocationWatch: () => Promise.resolve(false) })["addresses.get"];
+    if (!executor) throw new Error("addresses.get executor missing");
+
+    const missing = await executor(
+      commandFor("addresses.get", { address: ADDR }),
+      depsFor({ addresses: { get: () => Promise.reject(sdkError("addressNotFound")) } }),
+    );
+    expect(missing).toEqual({ kind: "acknowledged", result: RESULT_SAMPLES["addresses.get"] });
+
+    const info = { handle: ADDR, isIMessage: true };
+    const found = await executor(
+      commandFor("addresses.get", { address: ADDR }),
+      depsFor({ addresses: { get: () => Promise.resolve(info) } }),
+    );
+    expect(found).toEqual({ kind: "acknowledged", result: { found: true, info } });
+  });
+
+  it("locations.get emits the declared not-found shape", async () => {
+    const executor = locationExecutors({ setLocationWatch: () => Promise.resolve(false) })["locations.get"];
+    if (!executor) throw new Error("locations.get executor missing");
+    const missing = await executor(
+      commandFor("locations.get", { address: ADDR }),
+      depsFor({ locations: { get: () => Promise.reject(sdkError("sharedFriendLocationNotFound")) } }),
+    );
+    expect(missing).toEqual({ kind: "acknowledged", result: RESULT_SAMPLES["locations.get"] });
+  });
+
+  it("chats.count emits the declared shape through the real executor", async () => {
+    const executor = conversationExecutors(inMemoryDb())["chats.count"];
+    if (!executor) throw new Error("chats.count executor missing");
+    const outcome = await executor(
+      commandFor("chats.count", {}),
+      depsFor({ chats: { count: () => Promise.resolve(2) } }),
+    );
+    expect(outcome).toEqual({ kind: "acknowledged", result: RESULT_SAMPLES["chats.count"] });
   });
 });
 

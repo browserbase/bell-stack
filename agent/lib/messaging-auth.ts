@@ -2,15 +2,18 @@ import type { ConnectionPrincipal } from "eve/connections";
 import type { SessionAuthContext } from "eve/context";
 import type { ToolContext } from "eve/tools";
 
+import {
+  PHOTON_ISSUER,
+  isVerifiedPhotonAuth,
+} from "../../server/photon/principal.js";
+
 /**
  * One shared verified-messaging/private-audience predicate for the private
  * Photon channel. Link, personal 1Password, vault guards and sensitive
  * tools must all evaluate the same contract instead of re-deriving it.
+ * The principal contract itself lives in server/photon/principal.ts — the
+ * single source every verifier shares.
  */
-
-export const PHOTON_AUTHENTICATOR = "photon-imessage";
-export const PHOTON_ISSUER = "photon";
-export const PHOTON_PRINCIPAL_PATTERN = /^photon:[0-9a-f]{8,128}$/;
 
 /** Session auth attribute keys stamped by the channel's dispatch route. */
 export const PHOTON_ATTR_AUDIENCE = "photon:audience";
@@ -33,16 +36,19 @@ export interface VerifiedMessagingPrincipal {
   readonly subject?: string;
 }
 
-function audienceOf(auth: SessionAuthContext): MessagingAudience | undefined {
-  const value = auth.attributes[PHOTON_ATTR_AUDIENCE];
-  const audience = Array.isArray(value) ? value[0] : value;
-  return audience === "direct" || audience === "group" ? audience : undefined;
-}
-
-function attribute(auth: SessionAuthContext, key: string): string | undefined {
+/** Reads a single-valued photon session auth attribute. */
+export function photonAttribute(
+  auth: Pick<SessionAuthContext, "attributes">,
+  key: string,
+): string | undefined {
   const value = auth.attributes[key];
   const result = Array.isArray(value) ? value[0] : value;
   return typeof result === "string" && result.length > 0 ? result : undefined;
+}
+
+function audienceOf(auth: SessionAuthContext): MessagingAudience | undefined {
+  const audience = photonAttribute(auth, PHOTON_ATTR_AUDIENCE);
+  return audience === "direct" || audience === "group" ? audience : undefined;
 }
 
 /**
@@ -54,38 +60,22 @@ function attribute(auth: SessionAuthContext, key: string): string | undefined {
 export function verifiedMessagingPrincipal(
   auth: SessionAuthContext | null | undefined,
 ): VerifiedMessagingPrincipal | null {
-  if (auth?.principalType !== "user" || auth.authenticator !== PHOTON_AUTHENTICATOR
-    || auth.issuer !== PHOTON_ISSUER || !PHOTON_PRINCIPAL_PATTERN.test(auth.principalId))
-    return null;
+  if (!isVerifiedPhotonAuth(auth)) return null;
   const audience = audienceOf(auth);
   if (!audience) return null;
   return {
     principal: { type: "user", id: auth.principalId, issuer: PHOTON_ISSUER },
     audience,
-    chatGuid: attribute(auth, PHOTON_ATTR_CHAT),
-    sourceId: attribute(auth, PHOTON_ATTR_SOURCE),
-    bindingId: attribute(auth, PHOTON_ATTR_BINDING),
+    chatGuid: photonAttribute(auth, PHOTON_ATTR_CHAT),
+    sourceId: photonAttribute(auth, PHOTON_ATTR_SOURCE),
+    bindingId: photonAttribute(auth, PHOTON_ATTR_BINDING),
     subject: auth.subject,
   };
 }
 
 /** The verified principal for a tool call, or `null` when not messaging. */
-export function messagingPrincipal(ctx: ToolContext): VerifiedMessagingPrincipal | null {
-  return verifiedMessagingPrincipal(ctx.session.auth.current);
-}
-
-/** Whether the current session is a verified *private* (direct) Photon DM. */
-export function isPrivateMessagingPrincipal(ctx: ToolContext): boolean {
-  return messagingPrincipal(ctx)?.audience === "direct";
-}
-
-/**
- * Any Photon messaging principal — direct or group. Shared operator vaults,
- * reusable personal contexts and private continuations deny every one of
- * these identities; personal Link/1Password admit only the direct audience.
- */
-export function isAnyMessagingPrincipal(ctx: ToolContext): boolean {
-  return messagingPrincipal(ctx) !== null;
+export function messagingPrincipal(ctx: Pick<ToolContext, "session">): VerifiedMessagingPrincipal | null {
+  return verifiedMessagingPrincipal(ctx.session.auth?.current);
 }
 
 /**

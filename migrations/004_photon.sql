@@ -132,11 +132,14 @@ CREATE INDEX IF NOT EXISTS bell_photon_commands_queue
 CREATE INDEX IF NOT EXISTS bell_photon_commands_chat
   ON bell_photon_commands (source_id, chat_guid, created_at);
 
--- Durable provider resources: messages, attachments, polls, card sessions, artifacts.
+-- Durable provider resources: messages, attachments, polls, card sessions,
+-- chats, and the message-guid -> session index used by mini-app card updates.
+-- The kind list is governed by the ResourceKind union in server/photon/store.ts;
+-- an inline CHECK duplicated it and already diverged once, so the table carries
+-- no constraint and the legacy CHECK is dropped below.
 CREATE TABLE IF NOT EXISTS bell_photon_resources (
   source_id text NOT NULL REFERENCES bell_photon_sources (source_id),
-  kind text NOT NULL
-    CHECK (kind IN ('message', 'attachment', 'poll', 'miniapp_session', 'artifact', 'chat')),
+  kind text NOT NULL,
   resource_id text NOT NULL,
   data jsonb NOT NULL DEFAULT '{}',
   revision integer NOT NULL DEFAULT 1,
@@ -145,6 +148,11 @@ CREATE TABLE IF NOT EXISTS bell_photon_resources (
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (source_id, kind, resource_id)
 );
+
+-- Repair databases created while kind carried an inline CHECK list: the
+-- constraint predates miniapp_session_by_message and rejects card sends.
+ALTER TABLE bell_photon_resources
+  DROP CONSTRAINT IF EXISTS bell_photon_resources_kind_check;
 
 -- Bounded downloaded/uploaded artifact bytes for model staging and sends.
 CREATE TABLE IF NOT EXISTS bell_photon_artifacts (

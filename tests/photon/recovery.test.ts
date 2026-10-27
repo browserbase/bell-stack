@@ -95,14 +95,14 @@ function captureSuite(getDb: () => PhotonDb) {
       await db.captureEvent(row);
     }
     await db.captureEvent(insert(9, receivedEnvelope(9, chatB)));
-    const chatARows = await db.pendingForChat(SOURCE_ID, chatA, 10);
+    const chatARows = await db.dispatchableForChat(SOURCE_ID, chatA, 10);
     expect(chatARows.map((row) => row.sequence)).toEqual(["1", "2", "3"]);
-    // pendingDispatch takes the first captured row per chat only; other chats
-    // may have pending rows from earlier suite captures.
-    const heads = await db.pendingDispatch(SOURCE_ID, 10);
-    const head = (chat: string) => heads.find((row) => row.chatGuid === chat)?.sequence;
-    expect(head(chatA)).toBe("1");
-    expect(head(chatB)).toBe("9");
+    // dispatchableChatScopes orders scopes by each chat's oldest captured
+    // row; other chats may hold pending rows from earlier suite captures.
+    const scopes = await db.dispatchableChatScopes(SOURCE_ID, 10);
+    expect(scopes).toContain(chatA);
+    expect(scopes).toContain(chatB);
+    expect(scopes.indexOf(chatA)).toBeLessThan(scopes.indexOf(chatB));
   });
 
   it("resumes the provider watermark from the persisted max sequence", async () => {
@@ -153,11 +153,11 @@ describe("inbox dedup and ordering (in-memory PhotonDb seam)", () => {
     });
     // Sequence 103 arrives live before replay delivers 101/102.
     await gap.captureEvent(insert(103, receivedEnvelope(103)));
-    const heads = await gap.pendingForChat(SOURCE_ID, fx.DIRECT_CHAT, 10);
+    const heads = await gap.dispatchableForChat(SOURCE_ID, fx.DIRECT_CHAT, 10);
     expect(heads.map((row) => row.sequence)).toEqual(["103"]);
     await gap.captureEvent(insert(101, receivedEnvelope(101), { sourceKind: "catchup" }));
     await gap.captureEvent(insert(102, receivedEnvelope(102), { sourceKind: "catchup" }));
-    const ordered = await gap.pendingForChat(SOURCE_ID, fx.DIRECT_CHAT, 10);
+    const ordered = await gap.dispatchableForChat(SOURCE_ID, fx.DIRECT_CHAT, 10);
     expect(ordered.map((row) => row.sequence)).toEqual(["101", "102", "103"]);
     // The watermark is the max persisted sequence, not arrival order.
     expect(await gap.maxSequenceNum(SOURCE_ID, EPOCH)).toBe("103");

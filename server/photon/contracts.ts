@@ -1,10 +1,16 @@
 import type {
+  AttachmentInfo,
   Chat,
   CatchUpEvent,
   GroupChange,
   LiveEvent,
+  LocationRequestReceipt,
   Message,
+  MessageListPage,
   MessageReaction,
+  MiniAppCardSession,
+  MiniAppMessageResult,
+  MultiServiceAddressInfo,
   Poll,
   PollChangeDelta,
   SharedFriendLocation,
@@ -111,12 +117,23 @@ export const dispatchRequestSchema = z.object({
 }).strict();
 export type PhotonDispatchRequest = z.infer<typeof dispatchRequestSchema>;
 
-export type PhotonDispatchResult =
-  | { readonly status: "dispatched"; readonly sessionId: string; readonly deliveryId?: string }
-  | { readonly status: "duplicate"; readonly sessionId?: string; readonly deliveryId?: string }
-  | { readonly status: "state_applied" }
-  | { readonly status: "rejected"; readonly reason: string }
-  | { readonly status: "retryable"; readonly reason: string };
+/** POST /internal/photon/dispatch — the route's exact response contract. */
+export const dispatchResultSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("dispatched"),
+    sessionId: z.string().min(1),
+    deliveryId: z.string().optional(),
+  }).strict(),
+  z.object({
+    status: z.literal("duplicate"),
+    sessionId: z.string().optional(),
+    deliveryId: z.string().optional(),
+  }).strict(),
+  z.object({ status: z.literal("state_applied") }).strict(),
+  z.object({ status: z.literal("rejected"), reason: z.string() }).strict(),
+  z.object({ status: z.literal("retryable"), reason: z.string() }).strict(),
+]);
+export type PhotonDispatchResult = z.infer<typeof dispatchResultSchema>;
 
 /** POST /internal/photon/events — bounded projector read request. */
 export const eventsReadRequestSchema = z.object({
@@ -408,6 +425,118 @@ export function validateCommandArgs<Op extends PhotonCommandOp>(
 }
 
 /* ------------------------------------------------------------------ */
+/* Command result contract                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The provider upload receipt for one staged artifact. `attachmentGuid` is
+ * what message sends, sticker placements, and reaction attachments accept.
+ */
+export interface PhotonUploadResult {
+  readonly attachmentGuid: string;
+  readonly transferState: string;
+  readonly totalBytes: number;
+  readonly companion?: {
+    readonly fileName: string;
+    readonly mimeType: string;
+    readonly totalBytes: number;
+  };
+}
+
+/**
+ * Provider bytes staged into the conversation-scoped artifact store. The
+ * command receipt carries the artifact reference and media metadata —
+ * never the bytes themselves.
+ */
+export interface StagedMediaResult {
+  readonly artifactId: string;
+  readonly mediaType: string;
+  readonly byteSize: number;
+}
+
+/** A fetched group icon staged into the artifact store. */
+export interface GroupIconResult {
+  readonly artifactId: string;
+  readonly mimeType: string;
+  readonly byteSize: number;
+}
+
+/** Mini-app card send/update: the card message plus its durable session. */
+export interface MiniAppCommandResult {
+  readonly message: MiniAppMessageResult;
+  readonly miniAppCardSession: MiniAppCardSession;
+}
+
+/** Address-record lookup: absent addresses come back as a typed miss. */
+export type AddressLookupResult =
+  | { readonly found: true; readonly info: MultiServiceAddressInfo }
+  | { readonly found: false; readonly address: string };
+
+/** Friend-location lookup: absent locations come back as a typed miss. */
+export type LocationLookupResult =
+  | { readonly found: true; readonly location: SharedFriendLocation }
+  | { readonly found: false; readonly address: string };
+
+/**
+ * The canonical executor→tool result contract. `executeOp(op)` emits the
+ * shape declared here; `awaitCommandResult(op)` hands the same shape back
+ * to the tool layer, so projections read `receipt.result` — never provider
+ * fields off the receipt root. Values are JSON-round-tripped provider and
+ * artifact projections; bytes never cross this boundary. Command-style
+ * writes still acknowledge without a result body when the provider returns
+ * none, so every entry also tolerates `undefined`.
+ */
+export interface PhotonCommandResultMap {
+  "messages.sendText": Message;
+  "messages.sendAttachment": Message;
+  "messages.sendMultipart": Message;
+  "messages.sendCustomizedMiniApp": MiniAppCommandResult;
+  "messages.updateCustomizedMiniApp": MiniAppCommandResult;
+  "messages.edit": Message;
+  "messages.unsend": { readonly unsent: true };
+  "messages.setReaction": Message;
+  "messages.placeSticker": Message;
+  "messages.notifySilenced": { readonly notified: true };
+  "messages.get": Message;
+  "messages.listInChat": MessageListPage;
+  "messages.listRecent": MessageListPage;
+  "messages.getEmbeddedMedia": StagedMediaResult;
+  "attachments.upload": PhotonUploadResult;
+  "attachments.get": AttachmentInfo;
+  "chats.create": { readonly chat: Chat; readonly initialMessageGuid?: string };
+  "chats.get": Chat;
+  "chats.count": { readonly count: number };
+  "chats.markRead": { readonly marked: true };
+  "chats.setTyping": { readonly isTyping: boolean };
+  "chats.shareContactInfo": { readonly shared: true };
+  "chats.hasBackground": { readonly hasBackground: boolean };
+  "chats.setBackground": { readonly set: true };
+  "chats.removeBackground": { readonly removed: true };
+  "groups.setDisplayName": Chat;
+  "groups.addParticipants": Chat;
+  "groups.removeParticipants": Chat;
+  "groups.leave": { readonly left: true };
+  "groups.setIcon": { readonly set: true };
+  "groups.getIcon": GroupIconResult | { readonly icon: null };
+  "groups.removeIcon": { readonly removed: true };
+  "polls.create": Poll;
+  "polls.get": Poll;
+  "polls.vote": Poll;
+  "polls.unvote": Poll;
+  "polls.addOption": Poll;
+  "addresses.get": AddressLookupResult;
+  "addresses.isIMessageAvailable": { readonly address: string; readonly available: boolean };
+  "addresses.isFocusSilenced": { readonly address: string; readonly silenced: boolean };
+  "locations.request": LocationRequestReceipt;
+  "locations.list": { readonly locations: readonly SharedFriendLocation[] };
+  "locations.get": LocationLookupResult;
+  "locations.watch": { readonly address: string | null; readonly watching: boolean };
+}
+
+/** The typed result body one operation's executor emits. */
+export type PhotonCommandResult<Op extends PhotonCommandOp> = PhotonCommandResultMap[Op];
+
+/* ------------------------------------------------------------------ */
 /* Command ledger                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -430,36 +559,22 @@ export interface PhotonCommand<Op extends PhotonCommandOp = PhotonCommandOp> {
   readonly expiresAt?: string;
 }
 
-export type CommandOutcome =
-  | { readonly status: "acknowledged"; readonly result?: unknown; readonly providerReceipt?: unknown }
-  | { readonly status: "ambiguous"; readonly reason: string; readonly providerReceipt?: unknown }
-  | { readonly status: "failed"; readonly errorCode: string; readonly errorDetail?: string }
-  | { readonly status: "cancelled"; readonly reason?: string }
-  | { readonly status: "expired"; readonly reason?: string };
-
-export interface PhotonCommandResult {
-  readonly commandId: string;
-  readonly operation: PhotonCommandOp;
-  readonly status: CommandStatus;
-  readonly result?: unknown;
-  readonly providerReceipt?: unknown;
-  readonly errorCode?: string;
-  readonly errorDetail?: string;
-  readonly attempts: number;
-}
-
 /** Outcome the command executor returns to the outbox state machine. */
-export type CommandExecution =
-  | { readonly kind: "acknowledged"; readonly result?: unknown; readonly providerReceipt?: unknown }
+export type CommandExecution<Op extends PhotonCommandOp = PhotonCommandOp> =
+  | {
+      readonly kind: "acknowledged";
+      readonly result?: PhotonCommandResult<Op>;
+      readonly providerReceipt?: unknown;
+    }
   | { readonly kind: "ambiguous"; readonly reason: string; readonly providerReceipt?: unknown }
   | { readonly kind: "retryable"; readonly errorCode: string; readonly errorDetail?: string; readonly retryAfterMs?: number }
   | { readonly kind: "failed"; readonly errorCode: string; readonly errorDetail?: string };
 
 /** Executor invoked by the worker's outbox loop for one claimed command. */
-export type PhotonCommandExecutor = (
+export type PhotonCommandExecutor<Op extends PhotonCommandOp = PhotonCommandOp> = (
   command: PhotonCommand,
   deps: PhotonCommandDeps,
-) => Promise<CommandExecution>;
+) => Promise<CommandExecution<Op>>;
 
 /** Narrow dependency surface the command executors are allowed to use. */
 export interface PhotonCommandDeps {
@@ -494,4 +609,14 @@ export interface ProjectedOutput {
   readonly payload: Record<string, unknown>;
 }
 
-export type { Chat, CatchUpEvent, GroupChange, LiveEvent, Message, Poll, SharedFriendLocation };
+export type {
+  AttachmentInfo,
+  Chat,
+  CatchUpEvent,
+  GroupChange,
+  LiveEvent,
+  Message,
+  MessageListPage,
+  Poll,
+  SharedFriendLocation,
+};

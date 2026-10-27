@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { onePasswordVault } from "../../server/browser/vault/onepassword.js";
 import { nativeVault } from "../../server/browser/vault/native.js";
-import { verifiedMessagingPrincipal } from "../lib/messaging-auth";
+import { messagingPrincipal } from "../lib/messaging-auth";
 
 export default defineTool({
   description:
@@ -12,7 +12,7 @@ export default defineTool({
   async execute({ provider }, ctx) {
     // Shared operator vaults are denied to every messaging principal — direct
     // and group audiences alike.
-    if (verifiedMessagingPrincipal(ctx.session.auth?.current)) throw new Error("Shared operator vaults are not available over iMessage. Use onepassword_login for personal credentials.");
+    if (messagingPrincipal(ctx)) throw new Error("Shared operator vaults are not available over iMessage. Use onepassword_login for personal credentials.");
     const items = [];
     if (provider === "native" || (!provider && process.env.BELL_VAULT_MASTER_KEY?.trim()))
       items.push(...await nativeVault.list());

@@ -255,8 +255,9 @@ function pollEvent(ctx: EventContextLike & { readonly type: string }): PhotonNor
  * Deterministic JSON serialization: object keys sorted, Date -> ISO,
  * Uint8Array -> tagged base64, undefined object members dropped. Used for
  * the inbox integrity hash so the same provider payload always hashes
- * identically regardless of transport source or receipt metadata. (Named
- * `stableJson` to distinguish it from identity.ts's shallow canonicalJson.)
+ * identically regardless of transport source or receipt metadata. (This is
+ * the deep serializer; identity.ts's `canonicalTupleJson` is the shallow
+ * identity-tuple form.)
  */
 export function stableJson(value: unknown): string {
   if (value === null || value === undefined) return "null";
