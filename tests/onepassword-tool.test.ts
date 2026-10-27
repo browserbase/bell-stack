@@ -13,7 +13,7 @@ describe("personal login tool orchestration", () => {
     vi.clearAllMocks();
     vi.stubEnv("ONEPASSWORD_ENABLED", "true");
     vi.stubEnv("BROWSERBASE_1PASSWORD_EXTENSION_ID", "synthetic-extension");
-    ctx = { session: { id: "conversation", auth: { current: { principalType: "user", authenticator: "linq-message", issuer: "linq", principalId: "linq:sender" } } }, callId: "call", abortSignal: new AbortController().signal, getToken: vi.fn(async () => ({ token: "opaque-marker" })) } as unknown as ToolContext;
+    ctx = { session: { id: "conversation", auth: { current: { principalType: "user", authenticator: "photon-imessage", issuer: "photon", principalId: "photon:" + "a".repeat(64), subject: "phone:+12025550123", attributes: { "photon:audience": "direct" } } } }, callId: "call", abortSignal: new AbortController().signal, getToken: vi.fn(async () => ({ token: "opaque-marker" })) } as unknown as ToolContext;
     browser = { withHostedPage: vi.fn(async (_signal, operation) => operation({ url: async () => input.loginUrl }, "private-cdp-url", "browser-id")), close: vi.fn() };
     mocks.run.mockImplementation(async (_id, operation) => ({ result: await operation(browser), workbench: { browser: { sessionId: "browser-id" } } }));
     mocks.extensionFill.mockResolvedValue(undefined);

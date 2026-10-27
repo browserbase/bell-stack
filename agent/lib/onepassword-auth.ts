@@ -2,10 +2,15 @@ import { defineInteractiveAuthorization, type ConnectionPrincipal } from "eve/co
 import type { ToolContext } from "eve/tools";
 import { getOnePassword, type Resume } from "../../server/onepassword/oauth";
 import { failed, ownerOf } from "../../server/onepassword/config";
+import { messagingPrincipal } from "./messaging-auth";
 
 export function onePasswordPrincipal(ctx: ToolContext): ConnectionPrincipal {
-  const auth = ctx.session.auth.current;
-  const principal: ConnectionPrincipal = auth?.principalType === "user" && auth.authenticator === "linq-message" ? { type: "user", id: auth.principalId, issuer: auth.issuer } : { type: "app" };
+  // Personal 1Password is private-only: group sessions and other callers fall
+  // through to { type: "app" }, which fails ownerOf — deliberate fail-closed.
+  const verified = messagingPrincipal(ctx);
+  const principal: ConnectionPrincipal = verified?.audience === "direct"
+    ? verified.principal
+    : { type: "app" };
   ownerOf(principal);
   return principal;
 }

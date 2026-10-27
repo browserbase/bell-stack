@@ -15,6 +15,10 @@ import { createAuthorizationExecution } from "../node_modules/eve/dist/src/runti
 import { resolveWorkflowCallbackBaseUrl } from "../node_modules/eve/dist/src/execution/workflow-callback-url.js";
 import type { ChannelAdapter } from "../node_modules/eve/dist/src/channel/adapter.js";
 import linq from "../agent/channels/linq";
+import { photonPrincipalId } from "../server/photon/identity";
+
+// Verified private Photon messaging principal (`photon:` + sha256 digest).
+const photonId = (handle: string) => photonPrincipalId("test-project", { kind: "phone", value: handle });
 
 const databaseUrl = process.env.TEST_LINK_DATABASE_URL;
 
@@ -51,7 +55,7 @@ describe.skipIf(!databaseUrl)("Link OAuth with PostgreSQL", () => {
   });
   beforeEach(() => {
     now = Date.now();
-    principal = { type: "user", issuer: "linq", id: `linq:${randomUUID()}` };
+    principal = { type: "user", issuer: "photon", id: photonId("+12025550123") };
     callbackUrl = `https://bell.example/eve/v1/connections/link/callback/${randomUUID()}/opaque-hook`;
     config = {
       databaseUrl: databaseUrl!, origin: "https://bell.example", redirectUri: "https://bell.example/api/link/oauth/callback",
@@ -64,7 +68,7 @@ describe.skipIf(!databaseUrl)("Link OAuth with PostgreSQL", () => {
 
   function eveContext() {
     const sessionId = `test-session-${randomUUID()}`;
-    const auth = { principalType: "user" as const, principalId: principal.id, issuer: "linq", authenticator: "linq-message", attributes: {} };
+    const auth = { principalType: "user" as const, principalId: principal.id, issuer: "photon", authenticator: "photon-imessage", subject: "phone:+12025550123", attributes: { "photon:audience": "direct" } };
     const context = new ContextContainer();
     context.set(AuthKey, auth);
     context.set(SessionIdKey, sessionId);
@@ -124,7 +128,7 @@ describe.skipIf(!databaseUrl)("Link OAuth with PostgreSQL", () => {
     const { start, state } = await begin();
     const params = { state, code: "code" };
     await service.forward(params);
-    const other = { ...principal, id: `linq:${randomUUID()}` };
+    const other = { ...principal, id: photonId("+12025550199") };
     await expect(service.complete(other, callbackUrl, start.resume, params)).rejects.toMatchObject({ reason: "invalid_state" });
     await expect(service.complete(principal, callbackUrl + "other", start.resume, params)).rejects.toMatchObject({ reason: "invalid_state" });
     await expect(service.complete(principal, callbackUrl, start.resume, { ...params, code: "changed" })).rejects.toMatchObject({ reason: "invalid_state" });

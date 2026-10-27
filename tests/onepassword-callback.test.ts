@@ -13,10 +13,12 @@ describe("personal 1Password boundaries", () => {
     expect(integrationIdentity(key(), "client")).toMatchObject({ accountId: "account", userId: "user" });
     for (const value of ["ops_bad", key("//attacker.example/oauth-clients/client/accounts/account/users/user"), key("//api.1password.com/oauth-clients/other/accounts/account/users/user")]) expect(() => integrationIdentity(value, "client")).toThrow();
   });
-  it("rejects application principals and non-Linq user identities", () => {
+  it("rejects application principals and non-Photon user identities", () => {
+    const sender = "photon:" + "a".repeat(64);
     expect(() => ownerOf({ type: "app" })).toThrow();
-    expect(() => ownerOf({ type: "user", issuer: "caller", id: "linq:user" })).toThrow();
-    expect(ownerOf({ type: "user", issuer: "linq", id: "linq:user" })).toBe('["linq","linq:user"]');
+    expect(() => ownerOf({ type: "user", issuer: "caller", id: sender })).toThrow();
+    expect(() => ownerOf({ type: "user", issuer: "linq", id: "linq:user" })).toThrow();
+    expect(ownerOf({ type: "user", issuer: "photon", id: sender })).toBe(`["photon","${sender}"]`);
   });
   it("requires an exact HTTPS callback and a canonical encryption key", () => {
     const env = { BELL_PUBLIC_URL: "https://bell.example", ONEPASSWORD_REDIRECT_URI: "https://bell.example/api/onepassword/callback", ONEPASSWORD_TOKEN_ENCRYPTION_KEY: randomBytes(32).toString("base64"), ONEPASSWORD_CLIENT_ID: "client", ONEPASSWORD_CLIENT_SECRET: "secret", DATABASE_URL: "postgres://test" };

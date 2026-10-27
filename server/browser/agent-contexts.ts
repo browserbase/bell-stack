@@ -25,7 +25,7 @@ export async function listAgentContexts(): Promise<AgentContextRecord[]> {
   }
   const records = await Promise.all(
     Object.entries(local.contexts).map(async ([id, item]) => {
-      if (item.status === "draft") return undefined;
+      if (item.status === "draft" || item.audience === "group") return undefined;
       try {
         const remote = await sdk.contexts.retrieve(id);
         return {
@@ -64,6 +64,51 @@ export async function createAgentContext(name: string): Promise<AgentContextReco
   };
 }
 
+/**
+ * Creates a fresh isolated Context for a group browser task. The Context is
+ * tagged with the verified owning principal and the "group" audience so it can
+ * never be listed, selected, promoted or reused as a shared/personal Context.
+ * It is deleted when the task closes; the draft TTL sweep covers failures.
+ */
+export async function createIsolatedAgentContext(
+  ownerSessionId: string,
+  ownerId: string,
+): Promise<AgentContextRecord> {
+  const name = `Bell group ${shortSessionId(ownerSessionId)}`;
+  const remote = await browserbase().contexts.create({
+    name,
+    ...(process.env.BROWSERBASE_PROJECT_ID
+      ? { projectId: process.env.BROWSERBASE_PROJECT_ID }
+      : {}),
+  });
+  const expiresAt = new Date(Date.now() + draftTtlMs());
+  await getContextMetadataStore().addDraft(remote.id, name, ownerSessionId, expiresAt, new Date(), { ownerId, audience: "group" });
+  return {
+    id: remote.id,
+    name,
+    selected: false,
+    writerActive: false,
+    status: "draft",
+  };
+}
+
+/**
+ * Deletes an isolated group Context remotely and drops its metadata row, but
+ * only when the row is confirmed group-owned by this session. Returns false
+ * without touching shared/foreign Contexts.
+ */
+export async function releaseIsolatedContext(
+  id: string,
+  ownerSessionId: string,
+): Promise<boolean> {
+  const metadata = getContextMetadataStore();
+  const row = (await metadata.read()).contexts[id];
+  if (!row || row.audience !== "group" || row.ownerSessionId !== ownerSessionId) return false;
+  await deleteContext(id);
+  await metadata.remove(id);
+  return true;
+}
+
 export async function ensureAgentContext(
   ownerSessionId: string,
   currentContextId?: string,
@@ -83,6 +128,8 @@ export async function ensureAgentContext(
     ) {
       await deleteContext(currentContextId);
       await metadata.remove(currentContextId);
+    } else if (current?.audience === "group") {
+      // Isolated group Contexts are never reused outside their owning task.
     } else {
       try {
         const remote = await sdk.contexts.retrieve(currentContextId);
@@ -128,6 +175,8 @@ export async function promoteAgentContext(id: string, name?: string): Promise<Ag
   const remote = await sdk.contexts.retrieve(id);
   const metadata = getContextMetadataStore();
   const local = await metadata.read();
+  if (local.contexts[id]?.audience === "group")
+    throw new Error("An isolated group Context cannot be saved.");
   const cleanName = validateName(
     name?.trim() || local.contexts[id]?.name || remote.name || "Saved Context",
   );
@@ -152,8 +201,11 @@ export async function isDraftAgentContext(id: string, ownerSessionId?: string): 
 export async function selectAgentContext(id: string): Promise<void> {
   requireReusableContexts();
   validateId(id);
+  const metadata = getContextMetadataStore();
+  if ((await metadata.read()).contexts[id]?.audience === "group")
+    throw new Error("This Context belongs to an isolated group task.");
   await browserbase().contexts.retrieve(id);
-  await getContextMetadataStore().select(id);
+  await metadata.select(id);
 }
 
 async function deleteExpiredDraftContexts(now: Date): Promise<void> {
