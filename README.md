@@ -40,6 +40,7 @@ pnpm dev
 | Link by Stripe | Wallet authorization, spend approval, and checkout through Linq | [Sandbox and wallet setup](docs/link.md) |
 | 1Password | Operator credentials and OTP; personal Agentic Autofill is disabled by default | [Operator access](docs/browser-runtime.md#credentials-and-otp) · [Personal access status](docs/onepassword.md) |
 | Baselayer | Verified access to approved merchants using short-lived credentials | [Merchant access](docs/baselayer.md) |
+| Crossmint | Buy at any store with the person's own card, worldwide, under a spending cap the person approves | [Agent checkouts](docs/crossmint.md) |
 
 
 See the [repository layout and implementation map](docs/repository.md) to extend Bell.
