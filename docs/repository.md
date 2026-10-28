@@ -33,6 +33,7 @@ lifecycle; channel callbacks also handle terminal-session cleanup. Restart Bell 
 | Link by Stripe | [Eve extension and tools](../agent/extensions/link/), [authorization](../agent/lib/link-auth.ts), [server implementation](../server/link/) | [Sandbox and wallet setup](link.md) |
 | 1Password | [Operator SDK/CLI access](../server/browser/vault/onepassword.ts), [personal authorization](../agent/lib/onepassword-auth.ts), [personal server implementation](../server/onepassword/) | [Operator credentials](browser-runtime.md#credentials-and-otp), [personal access status](onepassword.md) |
 | Baselayer | [Agent tool](../agent/tools/merchant_access.ts), [credential minting](../server/baselayer.ts), [merchant verification](../server/verified-merchant.ts) | [Merchant access](baselayer.md) |
+| Crossmint | [Checkout tool](../agent/tools/crossmint_checkout.ts), [approved payment tool](../agent/tools/crossmint_pay.ts), [agent card tool](../agent/tools/crossmint_card_checkout.ts), [shared tool helpers](../agent/lib/crossmint.ts), [server client](../server/crossmint/client.ts), [payment cross-check](../server/crossmint/payment.ts), [agent cards](../server/crossmint/cards.ts), [operator JWT](../server/crossmint/operator-jwt.ts) and its [JWKS route](../app/api/crossmint/jwks/route.ts) | [Agent checkouts and agent cards](crossmint.md) |
 
 Personal 1Password Agentic Autofill is implemented but disabled by default pending hosted extension
 support and live verification. Keep `ONEPASSWORD_ENABLED=false` and the extension ID unset as

@@ -18,6 +18,7 @@
     "lint": "eslint . --max-warnings=0",
     "check": "pnpm test && pnpm typecheck && pnpm lint && pnpm build",
     "baselayer:mint": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/mint-baselayer-credential.mjs",
+    "crossmint:operator-jwt": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/crossmint-operator-jwt.mjs",
     "test:retirement:live": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/test-session-retirement.mjs"
   },
   "dependencies": {
@@ -25,6 +26,7 @@
     "@ai-sdk/openai": "4.0.46",
     "@browserbasehq/sdk": "2.18.0",
     "@browserbasehq/stagehand": "4.3.0",
+    "@crossmint/client-sdk-react-ui": "4.12.1",
     "@stripe/link-integrations-eve": "0.3.4",
     "ai": "7.0.137",
     "eve": "0.79.1",

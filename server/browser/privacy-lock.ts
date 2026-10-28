@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Pool } from "pg";
+import { isCrossmintCardsConfigured } from "../crossmint/cards";
 import { isLinkSandbox } from "../link/sandbox";
 
 const current = new AsyncLocalStorage<() => Promise<void>>();
@@ -27,8 +28,8 @@ export async function withBrowserPrivacyLock<T>(sessionId: string, operation: ()
       return await current.run(async () => { state.quarantined = true; }, operation);
     } finally { release(); }
   }
-  if (!database && !process.env.LINK_CLIENT_ID?.trim()) return operation();
-  if (!database && !process.env.DATABASE_URL) throw new Error("Link checkout requires DATABASE_URL.");
+  if (!database && !process.env.LINK_CLIENT_ID?.trim() && !isCrossmintCardsConfigured()) return operation();
+  if (!database && !process.env.DATABASE_URL) throw new Error("Browser payments require DATABASE_URL.");
   if (!database && !pool) {
     pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 30_000, allowExitOnIdle: true });
     pool.on("error", () => console.error("Browser privacy database connection failed."));
