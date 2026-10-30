@@ -78,16 +78,19 @@ export class BrowserSession {
     this.captchaNeedsObservation = true;
   }
 
-  async start(): Promise<void> {
+  private assertOpen(): void {
     if (this.closeRequested)
       throw new DOMException("The browser session was closed.", "AbortError");
+  }
+
+  async start(): Promise<void> {
+    this.assertOpen();
     if (this.stagehand && this.browser && !this.browser.closed) return;
     const startPromise = this.startPromise ?? this.startOnce();
     this.startPromise = startPromise;
     try {
       await startPromise;
-      if (this.closeRequested)
-        throw new DOMException("The browser session was closed.", "AbortError");
+      this.assertOpen();
     } finally {
       if (this.startPromise === startPromise) this.startPromise = undefined;
     }
@@ -114,6 +117,7 @@ export class BrowserSession {
           this.options.contextId = currentContextId;
           contextStatus = "saved";
         }
+        this.assertOpen();
         await this.startBrowserbase(apiKey);
       } else {
         this.browser = await localBrowser.launch({
@@ -581,8 +585,10 @@ export class BrowserSession {
 
     if (persistedSessionId) {
       for (let attempt = 1; attempt <= 2; attempt += 1) {
+        this.assertOpen();
         try {
           const prior = await this.browserbase.sessions.retrieve(persistedSessionId);
+          this.assertOpen();
           if (prior.userMetadata?.networkLogging !== "false" || prior.userMetadata?.sessionRecording !== "false")
             throw new Error("Session logging and recording settings cannot be verified.");
           if (personalBrowserEnabled() && (prior.userMetadata?.onepasswordExtension !== process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID || prior.userMetadata?.privateContext !== "true"))
@@ -606,6 +612,7 @@ export class BrowserSession {
           await this.browser?.close().catch(() => undefined);
           this.stagehand = undefined;
           this.browser = undefined;
+          this.assertOpen();
           if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500));
         }
       }
@@ -625,11 +632,13 @@ export class BrowserSession {
 
     let lastError: unknown;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
+      this.assertOpen();
       let launched: StagehandBrowser | undefined;
       try {
         launched = await stagehandBrowserbase.launch(
           browserbaseLaunchOptions(apiKey, this.options.contextId, this.options.proxyLocation),
         );
+        this.assertOpen();
         await this.attachStagehand(launched);
         if (!launched.sessionId)
           throw new Error("Stagehand did not return a Browserbase session ID.");
@@ -646,6 +655,7 @@ export class BrowserSession {
           this.remoteSessionId = launched.sessionId;
           await this.releaseRemoteSession();
         }
+        this.assertOpen();
         if (attempt < 3) {
           addTrace(
             this.state,
@@ -666,6 +676,7 @@ export class BrowserSession {
     try {
       const stagehand = await Stagehand.create({
         browser,
+        replaceExistingInstance: browser.origin === "connected",
         logging: { level: "off" },
       });
       await this.clearCaptchaSubscriptions();

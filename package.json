@@ -13,6 +13,9 @@
     "build": "pnpm build:agent && next build",
     "start": "next start --hostname 127.0.0.1 --port 4320",
     "test": "vitest run",
+    "test:parallel:live": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/test-parallel-research.mjs",
+    "test:parallel:production": "pnpm build && node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/test-parallel-production.mjs",
+    "test:browser:restart": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/test-browser-restart.mjs",
     "repro:stagehand-extensions": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/repro-stagehand-extensions.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
@@ -55,6 +58,9 @@
       "undici@>=7 <7.30.1": "7.30.1",
       "undici@>=8 <8.12.2": "8.12.2",
       "zod@>=4 <4.6.6": "4.6.7"
+    },
+    "patchedDependencies": {
+      "@browserbasehq/stagehand@4.3.0": "patches/@browserbasehq__stagehand@4.3.0.patch"
     }
   }
 }

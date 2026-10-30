@@ -6,6 +6,7 @@
 
 - Browserbase: Browser + Stagehand
 - Eve by Vercel: Agent Framework
+- Parallel: Public Web Research
 - Link by Stripe: Payments
 - Linq: Messaging Infrastruture
 - 1Password: Authentication
@@ -36,6 +37,7 @@ pnpm dev
 | --- | --- | --- |
 | Browserbase + Stagehand | Browser sessions, automation, saved Contexts, and human handoff | [Browser runtime](docs/browser-runtime.md) |
 | Eve by Vercel | Agent configuration, tools, conversation state, and channels | [Eve in Bell](docs/repository.md#eve-by-vercel) |
+| Parallel | Public-web search, source excerpts, and citations | [Research setup](docs/parallel.md) |
 | Linq | iMessage and SMS through a signed webhook and sender allowlist | [Messaging setup](docs/linq.md) |
 | Link by Stripe | Wallet authorization, spend approval, and checkout through Linq | [Sandbox and wallet setup](docs/link.md) |
 | 1Password | Operator credentials and OTP; personal Agentic Autofill is disabled by default | [Operator access](docs/browser-runtime.md#credentials-and-otp) · [Personal access status](docs/onepassword.md) |

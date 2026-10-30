@@ -1,0 +1,61 @@
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+index 79c752f0f1af5af154abd43d9e9aed6a49aa2ef3..ca17d0aebfd107092c1cd07b68041162561efa0f 100644
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -4356,6 +4356,8 @@ declare const StagehandClientCreateConfigSchema: z.ZodObject<{
+ }, z.core.$strict>;
+ declare const StagehandBrowserSchema: z.ZodCustom<StagehandBrowser, StagehandBrowser>;
+ declare const StagehandCreateOptionsSchema: z.ZodObject<{
++  /** Replace only the Stagehand instance after its previous controller has stopped; preserve the connected browser. */
++  replaceExistingInstance: z.ZodOptional<z.ZodBoolean>;
+   systemPrompt: z.ZodOptional<z.ZodString>;
+   cache: z.ZodOptional<z.ZodUnion<readonly [z.ZodBoolean, z.ZodObject<{
+     threshold: z.ZodOptional<z.ZodNumber>;
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 8bc8e77feb98eb646994ad211ff2c9b138ed039d..b1db2f192401868e82c505b1cbf04b3db60b9218 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -4755,7 +4755,7 @@ const StagehandClientCreateConfigSchema = z.strictObject(StagehandInitParamsSche
+ 	})
+ }).strict().meta({ id: "StagehandClientCreateConfig" });
+ const StagehandBrowserSchema = z.custom(isStagehandBrowser, "browser must be created by localBrowser or browserbase").meta({ id: "StagehandBrowser" });
+-const StagehandCreateOptionsSchema = StagehandClientCreateConfigSchema.extend({ browser: StagehandBrowserSchema }).meta({ id: "StagehandCreateOptions" });
++const StagehandCreateOptionsSchema = StagehandClientCreateConfigSchema.extend({ browser: StagehandBrowserSchema, replaceExistingInstance: z.boolean().optional() }).meta({ id: "StagehandCreateOptions" });
+ //#endregion
+ //#region src/sdkIdentity.ts
+ const STAGEHAND_SDK_IDENTITY = {
+@@ -5639,14 +5639,15 @@ var Stagehand = class Stagehand {
+ 		this.initRequestStarted = false;
+ 	}
+ 	static async create(input) {
+-		const { browser, ...createConfig } = StagehandCreateOptionsSchema.parse(input);
++		const { browser, replaceExistingInstance = false, ...createConfig } = StagehandCreateOptionsSchema.parse(input);
++		if (replaceExistingInstance && browser.origin !== "connected") throw new TypeError("Replacing a Stagehand instance requires an existing browser connection");
+ 		const claimedBrowser = claimStagehandBrowser(browser);
+ 		const stagehand = new Stagehand(browser, createConfig);
+ 		let lifecycleSignal;
+ 		try {
+ 			await withStagehandInitDeadline((signal) => {
+ 				lifecycleSignal = signal;
+-				return stagehand.initialize(claimedBrowser, signal);
++				return stagehand.initialize(claimedBrowser, signal, replaceExistingInstance);
+ 			});
+ 			return stagehand;
+ 		} catch (error) {
+@@ -5697,7 +5698,7 @@ var Stagehand = class Stagehand {
+ 		}
+ 		return result.value;
+ 	}
+-	async initialize(browser, signal) {
++	async initialize(browser, signal, replaceExistingInstance) {
+ 		const createConfig = this.createConfig;
+ 		const browserbaseConnection = resolveBrowserbaseConnection(createConfig, browser.workerInitMetadata);
+ 		const rpcClient = new RPCClient(browser.cdpClient);
+@@ -5710,6 +5711,7 @@ var Stagehand = class Stagehand {
+ 				this.removeClientLLMHandler = rpcClient.onRequest(StagehandMethods.llmGenerate, (params) => generate(params));
+ 			}
+ 			this.initRequestStarted = true;
++			if (replaceExistingInstance) await rpcClient.send(StagehandMethods.stagehandClose, {}, { signal });
+ 			await rpcClient.sendStagehandInit(stagehandCreateParamsForWorker(createConfig, browser, browserbaseConnection !== void 0), signal);
+ 			attachStagehandBrowserContext(this.browserHandle, new BrowserContext(rpcClient, () => this.browserHandle.close()));
+ 		} catch (error) {

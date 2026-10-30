@@ -9,6 +9,11 @@ overrides:
   undici@>=8 <8.12.2: 8.12.2
   zod@>=4 <4.6.6: 4.6.7
 
+patchedDependencies:
+  '@browserbasehq/stagehand@4.3.0':
+    hash: 5efd77d081c7e7c811aac62a63e83fec2f284f873b4cefd78c7f55c19f132339
+    path: patches/@browserbasehq__stagehand@4.3.0.patch
+
 importers:
 
   .:
@@ -24,7 +29,7 @@ importers:
         version: 2.18.0
       '@browserbasehq/stagehand':
         specifier: 4.3.0
-        version: 4.3.0
+        version: 4.3.0(patch_hash=5efd77d081c7e7c811aac62a63e83fec2f284f873b4cefd78c7f55c19f132339)
       '@stripe/link-integrations-eve':
         specifier: 0.3.4
         version: 0.3.4(eve@0.79.1(@opentelemetry/api@1.9.1)(ai@7.0.137(zod@4.6.7))(microsandbox@0.5.10))
@@ -2898,7 +2903,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@browserbasehq/stagehand@4.3.0':
+  '@browserbasehq/stagehand@4.3.0(patch_hash=5efd77d081c7e7c811aac62a63e83fec2f284f873b4cefd78c7f55c19f132339)':
     dependencies:
       '@browserbasehq/sdk': 2.18.0
       '@opentelemetry/api': 1.9.1
