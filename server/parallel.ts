@@ -4,7 +4,7 @@ import { z } from "zod";
 const maxCharsTotal = 16_000;
 const objective = z.string().trim().min(1).max(2_000);
 const credentialParameter = /(?:^|[_-])auth(?:$|[_-])|authorization|authentication|oauth|token|password|secret|credential|signature|session|api.?key|key-pair-id|^(authcode|code|key|sig|jwt|otp|policy)$/i;
-const publicUrl = z.string().trim().max(2_048).transform((value) => value.split("#", 1)[0]).refine((value) => {
+export const publicUrl = z.string().trim().max(2_048).transform((value) => value.split("#", 1)[0]).refine((value) => {
   try {
     const url = new URL(value);
     const host = url.hostname.replace(/\.$/, "");

@@ -92,7 +92,7 @@ describe("Bell's signed Linq webhook", () => {
     expect(dispatch).toHaveBeenCalledOnce();
     expect(dispatch).toHaveBeenCalledWith(event.data.parts[0].value, expect.objectContaining({
       context: [expect.stringContaining("Bell's private Linq")],
-      auth: expect.objectContaining({ principalId: "linq:sender-handle-id", principalType: "user" }),
+      auth: expect.objectContaining({ principalId: "linq:sender-handle-id", principalType: "user", attributes: expect.objectContaining({ bell_watch_chat: event.data.chat.id, bell_watch_sender: senderNumber, bell_watch_line: receivingNumber }) }),
       state: { thread: expect.objectContaining({ isDM: true }) },
     }));
     expect(fetch).toHaveBeenCalledOnce();
