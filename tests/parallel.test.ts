@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import search from "../agent/tools/web_search";
 import extract from "../agent/tools/web_fetch";
 import { extractWeb, searchWeb } from "../server/parallel";
@@ -32,10 +33,57 @@ describe("Parallel public research", () => {
     expect(fetcher.mock.calls[0][0]).toBe("https://api.parallel.ai/v1/extract");
     expect(JSON.parse(fetcher.mock.calls[0][1]!.body as string)).toEqual({
       objective: query.objective, urls: [source.url, failed], max_chars_total: 16_000,
-      advanced_settings: { full_content: false, excerpt_settings: { max_chars_per_result: 6_000 } },
+      advanced_settings: { full_content: false, fetch_policy: { timeout_seconds: 20 }, excerpt_settings: { max_chars_per_result: 6_000 } },
     });
     expect(output).toMatchObject({ results: [source], errors: [{ url: failed, error_type: "fetch_error", http_status_code: 403 }], warning_count: 1 });
     expect(JSON.stringify(output)).not.toContain("private diagnostic");
+  });
+
+  it("preserves public author query parameters in search and extraction", async () => {
+    const result = { ...source, url: source.url + "?author=2&author_name=example" };
+    const fetcher = reply({ results: [result] });
+    expect((await searchWeb(query, { fetch: fetcher })).results).toEqual([result]);
+    expect((await extractWeb({ urls: [result.url], objective: query.objective }, { fetch: fetcher })).results).toEqual([result]);
+    expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body)).urls).toEqual([result.url]);
+  });
+
+  it("keeps usable sources and errors when other returned URLs are excluded", async () => {
+    const error = { url: source.url + "/missing", error_type: "fetch_error", http_status_code: 404 };
+    const output = await searchWeb(query, { fetch: reply({
+      results: [{ ...source, url: source.url + "?access_token=private" }, source],
+      errors: [{ ...error, url: "http://localhost" }, error],
+    }) });
+    expect(output).toMatchObject({ results: [source], errors: [error], truncated: true });
+    expect(JSON.stringify(output)).not.toMatch(/private|localhost/);
+  });
+
+  it("returns partial extraction results before the client deadline", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(milliseconds => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), milliseconds);
+      return controller.signal;
+    });
+    const error = { url: source.url + "/slow", error_type: "timeout" };
+    try {
+      const outcome = extractWeb({ urls: [source.url, error.url], objective: query.objective }, {
+        fetch: async (_url, options) => {
+          const body = z.object({ advanced_settings: z.object({ fetch_policy: z.object({ timeout_seconds: z.number() }).optional() }) }).parse(JSON.parse(String(options?.body)));
+          return new Promise<Response>((resolve, reject) => {
+            const onAbort = () => { clearTimeout(timer); reject(options?.signal?.reason); };
+            const timer = setTimeout(() => {
+              options?.signal?.removeEventListener("abort", onAbort);
+              resolve(Response.json({ results: [source], errors: [error] }));
+            }, (body.advanced_settings.fetch_policy?.timeout_seconds ?? 60) * 1_000 + 1_000);
+            options?.signal?.addEventListener("abort", onAbort, { once: true });
+          });
+        },
+      }).then(output => ({ output }), (error: unknown) => ({ error }));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await outcome).toMatchObject({ output: { results: [source], errors: [error] } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("enforces count, per-source and total excerpt limits even when the provider ignores them", async () => {
@@ -64,7 +112,7 @@ describe("Parallel public research", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it.each(["?access_token=private", "?X-Amz-Signature=private", "?X-Goog-Credential=private", "?sig=private", "?api%5Fkey=private"])("rejects credential-bearing URL suffix %s before transmission", (suffix) => {
+  it.each(["?access_token=private", "?X-Amz-Signature=private", "?X-Goog-Credential=private", "?sig=private", "?api%5Fkey=private", "?auth=private", "?authorization=private", "?auth_code=private"])("rejects credential-bearing URL suffix %s before transmission", (suffix) => {
     const fetcher = reply();
     expect(() => extractWeb({ urls: [source.url + suffix], objective: query.objective }, { fetch: fetcher })).toThrow();
     expect(fetcher).not.toHaveBeenCalled();

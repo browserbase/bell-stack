@@ -3,7 +3,7 @@ import { z } from "zod";
 
 const maxCharsTotal = 16_000;
 const objective = z.string().trim().min(1).max(2_000);
-const credentialParameter = /auth|token|password|secret|credential|signature|session|api.?key|key-pair-id|^(code|key|sig|jwt|otp|policy)$/i;
+const credentialParameter = /(?:^|[_-])auth(?:$|[_-])|authorization|authentication|oauth|token|password|secret|credential|signature|session|api.?key|key-pair-id|^(authcode|code|key|sig|jwt|otp|policy)$/i;
 const publicUrl = z.string().trim().max(2_048).transform((value) => value.split("#", 1)[0]).refine((value) => {
   try {
     const url = new URL(value);
@@ -24,13 +24,13 @@ export const extractInput = z.object({ urls: z.array(publicUrl).min(1).max(5), o
 
 const responseSchema = z.object({
   results: z.array(z.object({
-    url: publicUrl,
+    url: publicUrl.nullable().catch(null),
     title: z.string().nullish(),
     publish_date: z.string().nullish(),
     excerpts: z.array(z.string()),
   })),
   errors: z.array(z.object({
-    url: publicUrl,
+    url: publicUrl.nullable().catch(null),
     error_type: z.string(),
     http_status_code: z.number().int().nullish(),
   })).default([]),
@@ -106,9 +106,12 @@ async function request(
     throw new Error("Parallel returned an invalid response.");
   }
   signal.throwIfAborted();
+  const sources = data.results.filter((result): result is typeof result & { url: string } => result.url !== null);
+  const errors = data.errors.filter((error): error is typeof error & { url: string } => error.url !== null);
   let remaining = maxCharsTotal;
-  let truncated = data.results.length > maxResults || data.errors.length > maxResults;
-  const results = data.results.slice(0, maxResults).map((result) => {
+  let truncated = data.results.length > maxResults || data.errors.length > maxResults ||
+    sources.length < data.results.length || errors.length < data.errors.length;
+  const results = sources.slice(0, maxResults).map((result) => {
     let budget = Math.min(remaining, maxCharsPerResult);
     const excerpts: string[] = [];
     for (const excerpt of result.excerpts) {
@@ -129,7 +132,7 @@ async function request(
     provider: "parallel",
     retrieved_at: new Date().toISOString(),
     results,
-    errors: data.errors.slice(0, maxResults).map((error) => ({
+    errors: errors.slice(0, maxResults).map((error) => ({
       url: error.url,
       error_type: error.error_type.slice(0, 100),
       http_status_code: error.http_status_code ?? null,
@@ -156,6 +159,6 @@ export function extractWeb(input: z.input<typeof extractInput>, options: Options
     ...parsed,
     urls,
     max_chars_total: maxCharsTotal,
-    advanced_settings: { full_content: false, excerpt_settings: { max_chars_per_result: 6_000 } },
+    advanced_settings: { full_content: false, fetch_policy: { timeout_seconds: 20 }, excerpt_settings: { max_chars_per_result: 6_000 } },
   }, urls.length, 6_000, options);
 }
