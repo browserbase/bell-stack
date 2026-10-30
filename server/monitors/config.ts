@@ -25,3 +25,18 @@ export function creationOrigin(): string {
 export function assertOwner(owner: Owner): void {
   if (owner.issuer !== "linq" || !/^linq:.{1,507}$/.test(owner.id)) throw new Error("Watches require an authenticated Linq sender.");
 }
+
+export const frequencyInput = z.string().regex(/^[1-9]\d{0,2}[hdw]$/, "Use whole hours, days, or weeks, between 1h and 30d.").refine(value => {
+  const hours = Number(value.slice(0, -1)) * ({ h: 1, d: 24, w: 168 }[value.slice(-1)] ?? 0);
+  return hours >= 1 && hours <= 720;
+}, "Frequency must be between 1h and 30d.").transform(value => {
+  const hours = Number(value.slice(0, -1)) * ({ h: 1, d: 24, w: 168 }[value.slice(-1)]!);
+  return hours % 168 === 0 ? `${hours / 168}w` : hours % 24 === 0 ? `${hours / 24}d` : `${hours}h`;
+});
+
+export const monitorTimestamp = z.string().datetime({ offset: true }).transform(value => {
+  // Preserve sub-millisecond precision while giving equivalent instants one recovery identity.
+  const fraction = (value.match(/\.(\d+)/)?.[1] ?? "").replace(/0+$/, "");
+  const seconds = new Date(value.replace(/\.\d+/, "")).toISOString().slice(0, 19);
+  return `${seconds}${fraction ? `.${fraction}` : ""}Z`;
+});

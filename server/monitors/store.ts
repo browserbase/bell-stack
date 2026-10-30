@@ -3,7 +3,7 @@ import { Pool, type PoolClient } from "pg";
 import { type Destination, type Owner, required } from "./config";
 
 export interface Watch {
-  id: string; issuer: string; owner_id: string; operation: string; query: string; destination: Destination;
+  id: string; issuer: string; owner_id: string; operation: string; query: string; creation_frequency: string; frequency: string; pending_frequency: string | null; destination: Destination;
   remote_id: string | null; status: string; stopped: boolean; health: string | null; health_at: Date | null;
   created_at: Date; last_scan_at: Date | null; scan_anchor: string | null; recovery_gap: boolean;
 }
@@ -16,10 +16,10 @@ export class MonitorStore {
     catch (error) { await client.query("ROLLBACK"); throw error; }
     finally { client.release(); }
   }
-  async prepare(owner: Owner, destination: Destination, operation: string, query: string): Promise<Watch> {
-    await this.pool.query("INSERT INTO bell_monitors (id,issuer,owner_id,operation,query,destination,status) VALUES ($1,$2,$3,$4,$5,$6,'prepared') ON CONFLICT (issuer,owner_id,operation) DO NOTHING", [randomUUID(), owner.issuer, owner.id, operation, query, destination]);
+  async prepare(owner: Owner, destination: Destination, operation: string, query: string, frequency = "1d"): Promise<Watch> {
+    await this.pool.query("INSERT INTO bell_monitors (id,issuer,owner_id,operation,query,destination,status,creation_frequency,frequency) VALUES ($1,$2,$3,$4,$5,$6,'prepared',$7,$7) ON CONFLICT (issuer,owner_id,operation) DO NOTHING", [randomUUID(), owner.issuer, owner.id, operation, query, destination, frequency]);
     const watch = (await this.pool.query<Watch>("SELECT * FROM bell_monitors WHERE issuer=$1 AND owner_id=$2 AND operation=$3", [owner.issuer, owner.id, operation])).rows[0];
-    if (watch.query !== query || watch.destination.chat !== destination.chat || watch.destination.sender !== destination.sender || watch.destination.line !== destination.line) throw new Error("Watch operation has different input.");
+    if (watch.creation_frequency !== frequency || watch.query !== query || watch.destination.chat !== destination.chat || watch.destination.sender !== destination.sender || watch.destination.line !== destination.line) throw new Error("Watch operation has different input.");
     return watch;
   }
   async get(id: string): Promise<Watch> {
@@ -38,11 +38,14 @@ export class MonitorStore {
       return true;
     });
   }
-  async bind(id: string, remoteId: string, cancelled = false) {
+  async bind(id: string, remoteId: string, cancelled = false, frequency = "1d") {
     await this.transaction(async client => {
       const watch = (await client.query<Watch>("SELECT * FROM bell_monitors WHERE id=$1 FOR UPDATE", [id])).rows[0];
-      if (watch.remote_id && watch.remote_id !== remoteId) throw new Error("Conflicting monitor identity");
-      await client.query("UPDATE bell_monitors SET remote_id=$2,status=$3 WHERE id=$1", [id, remoteId, cancelled ? "cancelled" : watch.stopped ? "cancel_pending" : "active"]);
+      if (watch.remote_id) {
+        if (watch.remote_id !== remoteId) throw new Error("Conflicting monitor identity");
+        return;
+      }
+      await client.query("UPDATE bell_monitors SET remote_id=$2,status=$3,frequency=$4 WHERE id=$1", [id, remoteId, cancelled ? "cancelled" : watch.stopped ? "cancel_pending" : "active", frequency]);
       if (watch.stopped && !cancelled) await this.enqueue("cancel", `cancel:${id}`, id, {}, client);
     });
   }
@@ -51,9 +54,32 @@ export class MonitorStore {
       const watch = (await client.query<Watch>("SELECT * FROM bell_monitors WHERE id=$1 AND issuer=$2 AND owner_id=$3 FOR UPDATE", [id, owner.issuer, owner.id])).rows[0];
       if (!watch) throw new Error("Watch not found.");
       const localOnly = watch.status === "prepared" || watch.status === "failed";
-      await client.query("UPDATE bell_monitors SET stopped=true,status=$2 WHERE id=$1", [id, watch.status === "cancelled" || localOnly ? "cancelled" : "cancel_pending"]);
-      await client.query("DELETE FROM bell_monitor_jobs WHERE watch_id=$1 AND kind='send' AND lease_until IS NULL", [id]);
+      await client.query("UPDATE bell_monitors SET stopped=true,pending_frequency=NULL,status=$2 WHERE id=$1", [id, watch.status === "cancelled" || localOnly ? "cancelled" : "cancel_pending"]);
+      await client.query("DELETE FROM bell_monitor_jobs WHERE watch_id=$1 AND kind IN ('send','update') AND lease_until IS NULL", [id]);
       if (watch.remote_id && watch.status !== "cancelled") await this.enqueue("cancel", `cancel:${id}`, id, {}, client);
+    });
+  }
+  async requestFrequency(owner: Owner, id: string, frequency: string): Promise<Watch> {
+    return this.transaction(async client => {
+      const watch = (await client.query<Watch>("SELECT * FROM bell_monitors WHERE id=$1 AND issuer=$2 AND owner_id=$3 FOR UPDATE", [id, owner.issuer, owner.id])).rows[0];
+      if (!watch) throw new Error("Watch not found.");
+      if (watch.stopped || watch.status !== "active" || !watch.remote_id) throw new Error("Watch operation requires an active watch.");
+      if (watch.pending_frequency) {
+        if (watch.pending_frequency !== frequency) throw new Error("Watch operation has a pending frequency change. List watches before requesting another change.");
+        return watch;
+      }
+      if (watch.frequency === frequency) return watch;
+      await client.query("UPDATE bell_monitors SET pending_frequency=$2 WHERE id=$1", [id, frequency]);
+      await this.enqueue("update", `update:${id}:${randomUUID()}`, id, { frequency }, client);
+      return { ...watch, pending_frequency: frequency };
+    });
+  }
+  async applyFrequency(id: string, frequency: string, update: (remoteId: string) => Promise<string>) {
+    await this.transaction(async client => {
+      const watch = (await client.query<Watch>("SELECT * FROM bell_monitors WHERE id=$1 FOR UPDATE", [id])).rows[0];
+      if (!watch || watch.stopped || watch.status !== "active" || !watch.remote_id || watch.pending_frequency !== frequency) return;
+      const confirmed = await update(watch.remote_id);
+      await client.query("UPDATE bell_monitors SET frequency=$2,pending_frequency=NULL WHERE id=$1", [id, confirmed]);
     });
   }
   async deliver(id: string, eventId: string, send: (watch: Watch) => Promise<string>) {

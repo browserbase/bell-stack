@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { Webhook } from "standardwebhooks";
 import { z } from "zod";
-import { allowed, assertOwner, creationOrigin, destinationSchema, type Destination, type Owner, queryInput, required } from "./config";
+import { allowed, assertOwner, creationOrigin, destinationSchema, type Destination, type Owner, queryInput, required, frequencyInput, monitorTimestamp } from "./config";
 import { eventSchema, type MonitorProvider, parallelMonitors, ProviderError, sendLinq } from "./provider";
 import { type Job, type Watch, MonitorStore, monitorStore } from "./store";
 
-const callbackTimestamp = z.string().datetime({ offset: true });
+const callbackTimestamp = monitorTimestamp;
+class InvalidMonitorEvent extends Error {}
 const callbackData = z.object({ monitor_id: z.string(), metadata: z.record(z.string(), z.string()).nullish() });
 const callbackSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("monitor.event.detected"), timestamp: callbackTimestamp, data: callbackData.extend({ event: z.object({ event_group_id: z.string() }) }) }),
@@ -15,15 +16,15 @@ const callbackSchema = z.discriminatedUnion("type", [
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 export class MonitorService {
   constructor(readonly store: MonitorStore, readonly provider: MonitorProvider = parallelMonitors, readonly send: (destination: Destination, text: string, key: string) => Promise<string> = sendLinq) {}
-  async create(owner: Owner, destination: Destination, operation: string, input: string) {
+  async create(owner: Owner, destination: Destination, operation: string, input: string, cadence = "1d") {
     assertOwner(owner); destinationSchema.parse(destination);
     if (!allowed(destination)) throw new Error("This Linq destination is no longer allowed.");
-    const origin = creationOrigin(), query = queryInput.parse(input);
-    const watch = await this.store.prepare(owner, destination, operation, query);
+    const origin = creationOrigin(), query = queryInput.parse(input), frequency = frequencyInput.parse(cadence);
+    const watch = await this.store.prepare(owner, destination, operation, query, frequency);
     if (await this.store.dispatch(watch.id)) {
       try {
-        const remote = await this.provider.create(query, watch.id, origin);
-        await this.store.bind(watch.id, remote.monitor_id, remote.status === "cancelled");
+        const remote = await this.provider.create(query, watch.id, origin, frequency);
+        await this.store.bind(watch.id, remote.monitor_id, remote.status === "cancelled", remote.frequency);
       } catch (error) {
         const rejected = error instanceof ProviderError && [400,401,403,422].includes(error.status);
         await this.store.pool.query("UPDATE bell_monitors SET status=$2 WHERE id=$1 AND status='dispatched'", [watch.id, rejected ? "failed" : "uncertain"]);
@@ -31,7 +32,7 @@ export class MonitorService {
       }
     }
     const result = await this.store.get(watch.id);
-    return { id: result.id, status: result.status, frequency: "1d", processor: "lite" };
+    return { id: result.id, status: result.status, frequency: result.frequency, pending_frequency: result.pending_frequency, processor: "lite" };
   }
   async list(owner: Owner) {
     assertOwner(owner);
@@ -51,8 +52,13 @@ export class MonitorService {
         }
         updates.push({ event_id: event.event_id, event_date: event.event_date, content, citations, truncated: content.length < text.length });
       }
-      return { id: w.id, query: w.query.slice(0, 400), status: w.status, health: w.health, health_at: w.health_at, recovery_gap: w.recovery_gap, last_scan_at: w.last_scan_at, updates, updates_truncated: updates.length < w.updates.length, problems: w.problems };
+      return { id: w.id, query: w.query.slice(0, 400), status: w.status, frequency: w.frequency, pending_frequency: w.pending_frequency, health: w.health, health_at: w.health_at, recovery_gap: w.recovery_gap, last_scan_at: w.last_scan_at, updates, updates_truncated: updates.length < w.updates.length, problems: w.problems };
     });
+  }
+  async update(owner: Owner, id: string, cadence: string) {
+    assertOwner(owner); z.string().uuid().parse(id);
+    const watch = await this.store.requestFrequency(owner, id, frequencyInput.parse(cadence));
+    return { id: watch.id, status: watch.status, frequency: watch.frequency, pending_frequency: watch.pending_frequency };
   }
   async stop(owner: Owner, id: string) {
     assertOwner(owner); z.string().uuid().parse(id);
@@ -80,7 +86,7 @@ export class MonitorService {
         const provider = error instanceof ProviderError ? error : undefined;
         const terminal = !!provider && [400,401,402,403,404,422].includes(provider.status);
         const delay = Math.max(provider?.retryAfter ?? 0, Math.min(3_600_000, 1000 * 2 ** job.attempts) + Math.floor(Math.random() * 1000));
-        await this.store.retry(job, provider ? `provider_http_${provider.status}` : "processing_failed", terminal, delay);
+        await this.store.retry(job, provider ? `provider_http_${provider.status}` : error instanceof InvalidMonitorEvent ? "invalid_monitor_event" : "processing_failed", terminal, delay);
         console.warn("bell_monitor_job_failed", { kind: job.kind, attempt: job.attempts, terminal: terminal || job.attempts >= 8 });
       }
       processed++;
@@ -114,7 +120,7 @@ export class MonitorService {
         const result = await this.provider.list(cursor);
         const matches = result.monitors.filter(m => m.metadata?.bell_watch_id === watch.id);
         if (matches.length > 1) throw new Error("Multiple remote matches require operator reconciliation");
-        if (matches.length) { await this.store.bind(watch.id, matches[0].monitor_id, matches[0].status === "cancelled"); return; }
+        if (matches.length) { await this.store.bind(watch.id, matches[0].monitor_id, matches[0].status === "cancelled", matches[0].frequency); return; }
         cursor = result.next_cursor ?? undefined;
         if (!cursor) break;
       }
@@ -127,6 +133,15 @@ export class MonitorService {
       await this.store.pool.query("UPDATE bell_monitors SET status='cancelled' WHERE id=$1", [watch.id]); return;
     }
     if (watch.stopped || watch.status !== "active") return;
+    if (job.kind === "update") {
+      const frequency = frequencyInput.parse(job.payload.frequency);
+      await this.store.applyFrequency(watch.id, frequency, async id => {
+        const remote = await this.provider.update(id, frequency);
+        if (remote.monitor_id !== id || remote.status !== "active" || remote.frequency !== frequency) throw new Error("Monitor frequency not confirmed");
+        return remote.frequency;
+      });
+      return;
+    }
     if (job.kind === "send") {
       const payload = z.object({ text: z.string(), key: z.string(), eventId: z.string() }).parse(job.payload);
       await this.store.deliver(watch.id, payload.eventId, async current => {
@@ -142,9 +157,18 @@ export class MonitorService {
       const started = new Date();
       let anchor: string | undefined, previousAnchorSeen = false;
       const runs = new Set<string>();
+      let invalidEvents = false;
+      const prior = watch.scan_anchor?.match(/^(completion|error):(.*)$/);
+      const priorTimestamp = prior ? monitorTimestamp.safeParse(prior[2]) : undefined;
+      const previousAnchor = prior && priorTimestamp?.success ? `${prior[1]}:${priorTimestamp.data}` : watch.scan_anchor;
       for (let page = 0; page < 10 && Date.now() < deadline; page++) {
         const result = await this.provider.events(watch.remote_id, group, cursor);
-        const events = result.events.map(raw => eventSchema.parse(raw));
+        const events = result.events.flatMap(raw => {
+          const parsed = eventSchema.safeParse(raw);
+          if (parsed.success) return [parsed.data];
+          invalidEvents = true;
+          return [];
+        });
         const ids = events.flatMap(event => event.event_type === "event_stream" ? [event.event_id] : []);
         const known = new Set((await this.store.pool.query<{ event_id: string }>("SELECT event_id FROM bell_monitor_events WHERE watch_id=$1 AND event_id=ANY($2::text[])", [watch.id, ids])).rows.map(row => row.event_id));
         for (const event of events) {
@@ -154,12 +178,16 @@ export class MonitorService {
           }
           const identity = event.event_type === "event_stream" ? event.event_id : `${event.event_type}:${event.timestamp}`;
           anchor ??= identity;
-          if (identity === watch.scan_anchor) previousAnchorSeen = true;
+          if (identity === previousAnchor) previousAnchorSeen = true;
           runs.add(event.event_type === "event_stream" ? event.event_group_id : identity);
           if (event.event_type !== "event_stream" || !known.has(event.event_id)) await this.event(watch, event);
         }
         cursor = result.next_cursor ?? undefined;
         if (!cursor) {
+          if (invalidEvents) {
+            await this.store.pool.query("UPDATE bell_monitors SET recovery_gap=true WHERE id=$1", [watch.id]);
+            throw new InvalidMonitorEvent("Invalid monitor event in recovery scan");
+          }
           if (!group) {
             const gap = watch.scan_anchor ? !previousAnchorSeen : runs.size >= 100;
             await this.store.pool.query("UPDATE bell_monitors SET last_scan_at=$2,scan_anchor=COALESCE($3,scan_anchor),recovery_gap=recovery_gap OR $4 WHERE id=$1", [watch.id, started, anchor ?? null, gap]);

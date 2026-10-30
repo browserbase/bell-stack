@@ -3,6 +3,8 @@ import { Webhook, WebhookVerificationError } from "standardwebhooks";
 import { receiveWebhook, processMonitors } from "../server/monitors/http";
 import { MonitorService } from "../server/monitors/service";
 import { parallelMonitors, ProviderError, readBounded, sendLinq } from "../server/monitors/provider";
+import { frequencyInput, monitorTimestamp } from "../server/monitors/config";
+import { eventSchema } from "../server/monitors/provider";
 import { watchDestination, watchIdentity } from "../agent/lib/monitors";
 import { MonitorStore, monitorStore } from "../server/monitors/store";
 import { Pool } from "pg";
@@ -10,6 +12,30 @@ import type { ToolContext } from "eve/tools";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 describe("monitor HTTP boundaries", () => {
+  it.each(["1h", "6h", "1d", "1w", "30d", "720h", "4w"])("accepts supported frequency %s", value => {
+    expect(frequencyInput.safeParse(value).success).toBe(true);
+  });
+  it.each(["0h", "5m", "1.5h", "31d", "5w", "721h", "-1h", "daily", ""])("rejects unsupported frequency %s", value => {
+    expect(frequencyInput.safeParse(value).success).toBe(false);
+  });
+  it("normalizes equivalent timestamps without losing fractional precision", () => {
+    expect(monitorTimestamp.parse("2026-10-30T05:00:00.123456-07:00")).toBe("2026-10-30T12:00:00.123456Z");
+    expect(monitorTimestamp.parse("2026-10-30T12:00:00.000+00:00")).toBe("2026-10-30T12:00:00Z");
+    for (const timestamp of ["2026-10-30T12:00:00Z", "2026-10-30T05:00:00-07:00", "2026-10-30T12:00:00+00:00"]) {
+      for (const event_type of ["completion", "error"]) expect(eventSchema.parse({ event_type, timestamp, error_message: "quota" })).toMatchObject({ timestamp: "2026-10-30T12:00:00Z" });
+    }
+  });
+  it("passes selected frequency to create and updates only that field on the existing monitor", async () => {
+    vi.stubEnv("PARALLEL_API_KEY", "test");
+    const fetcher = vi.fn(async () => Response.json({ monitor_id: "monitor-id", status: "active", frequency: "6h" }));
+    vi.stubGlobal("fetch", fetcher);
+    await parallelMonitors.create("Public releases", "watch-id", "https://bell.example.com", "6h");
+    await parallelMonitors.update("monitor-id", "6h");
+    const calls = fetcher.mock.calls as unknown as [string, RequestInit][];
+    expect(JSON.parse(calls[0][1].body as string).frequency).toBe("6h");
+    expect(calls[1][0]).toBe("https://api.parallel.ai/v1/monitors/monitor-id/update");
+    expect(JSON.parse(calls[1][1].body as string)).toEqual({ frequency: "6h" });
+  });
   it.each([
     ["monitor.event.detected", { event_group_id: "group-1" }],
     ["monitor.execution.completed", { type: "completion", monitor_ts: "completed_2026-10-30T12:00:00Z" }],
@@ -74,7 +100,7 @@ describe("monitor HTTP boundaries", () => {
   });
   it("uses the v1 create contract and passes stable Linq idempotency in the message body", async () => {
     vi.stubEnv("PARALLEL_API_KEY", "parallel-test"); vi.stubEnv("LINQ_API_KEY", "linq-test");
-    const fetcher = vi.fn(async (url: string) => Response.json(url.includes("parallel.ai") ? { monitor_id: "monitor-id", status: "active" } : { message: { id: "message-id" } }));
+    const fetcher = vi.fn(async (url: string) => Response.json(url.includes("parallel.ai") ? { monitor_id: "monitor-id", status: "active", frequency: "1d" } : { message: { id: "message-id" } }));
     vi.stubGlobal("fetch", fetcher);
     await parallelMonitors.create("Public releases", "watch-id", "https://bell.example.com");
     expect(fetcher).toHaveBeenCalledWith("https://api.parallel.ai/v1/monitors", expect.objectContaining({ redirect: "error", headers: expect.objectContaining({ "x-api-key": "parallel-test" }), body: expect.any(String) }));
