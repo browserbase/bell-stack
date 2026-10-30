@@ -107,6 +107,58 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     expect(provider.cancel).toHaveBeenCalledWith(`monitor-${watch.id}`);
     expect((await service.list(owner))[0].status).toBe("cancelled");
   });
+  it("suppresses a claimed send when stop commits after the worker reads the watch", async () => {
+    const watch = await create();
+    await pool.query("UPDATE bell_monitors SET next_scan_at=now()+interval '1 hour'");
+    await pool.query("DELETE FROM bell_monitor_jobs");
+    await store.enqueue("send", "queued-send", watch.id, { text: "update", key: "stable", eventId: "event-1" });
+    const get = store.get.bind(store);
+    vi.spyOn(store, "get").mockImplementationOnce(async id => {
+      const snapshot = await get(id);
+      await new MonitorService(new MonitorStore(pool), provider, send).stop(owner, id);
+      return snapshot;
+    });
+    await service.process();
+    expect(send).not.toHaveBeenCalled();
+    expect((await get(watch.id)).stopped).toBe(true);
+  });
+  it("waits for an in-flight send before confirming stop", async () => {
+    const watch = await create();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    send.mockImplementationOnce(async () => { await gate; return "accepted-message"; });
+    const processing = service.process();
+    let stopping: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+      stopping = new MonitorStore(pool).stop(owner, watch.id);
+      await vi.waitFor(async () => {
+        const waiting = await pool.query("SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%owner_id=$3 FOR UPDATE%'");
+        expect(waiting.rowCount).toBeGreaterThan(0);
+      });
+      expect((await store.get(watch.id)).stopped).toBe(false);
+    } finally {
+      release();
+      await Promise.all([processing, stopping]);
+    }
+    expect((await store.get(watch.id)).stopped).toBe(true);
+    await service.process();
+    expect(send).toHaveBeenCalledOnce();
+  });
+  it.each([
+    ["monitor.execution.completed", { type: "completion", monitor_ts: "completed_2026-10-30T12:00:00Z" }, "completed"],
+    ["monitor.execution.failed", { type: "error", error: "Execution failed", id: "error-1", date: "2026-10-30T12:00:00Z" }, "failed"],
+  ])("stores and processes a signed %s without sending an alert", async (type, event, health) => {
+    const watch = await create();
+    provider.events = vi.fn(async () => ({ events: [] }));
+    const now = new Date(), id = randomUUID();
+    const body = JSON.stringify({ type, timestamp: now.toISOString().replace("Z", "+00:00"), data: { monitor_id: `monitor-${watch.id}`, event } });
+    await service.ingest(body, { "webhook-id": id, "webhook-timestamp": String(Math.floor(now.getTime() / 1000)), "webhook-signature": new Webhook(secret).sign(id, now, body) });
+    expect((await pool.query("SELECT id FROM bell_monitor_inbox WHERE id=$1", [id])).rowCount).toBe(1);
+    await service.process();
+    expect((await store.get(watch.id)).health).toBe(health);
+    expect(send).not.toHaveBeenCalled();
+  });
   it("suppresses delivery when the sender is removed from the allowlist", async () => {
     const watch = await create(); await callback(watch.id);
     vi.stubEnv("BELL_LINQ_ALLOWED_SENDERS", "");

@@ -5,7 +5,13 @@ import { allowed, assertOwner, creationOrigin, destinationSchema, type Destinati
 import { eventSchema, type MonitorProvider, parallelMonitors, ProviderError, sendLinq } from "./provider";
 import { type Job, type Watch, MonitorStore, monitorStore } from "./store";
 
-const callbackSchema = z.object({ type: z.enum(["monitor.event.detected", "monitor.execution.completed", "monitor.execution.failed"]), timestamp: z.string().datetime(), data: z.object({ monitor_id: z.string(), event: z.object({ event_group_id: z.string() }).optional(), metadata: z.record(z.string(), z.string()).nullish() }) });
+const callbackTimestamp = z.string().datetime({ offset: true });
+const callbackData = z.object({ monitor_id: z.string(), metadata: z.record(z.string(), z.string()).nullish() });
+const callbackSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("monitor.event.detected"), timestamp: callbackTimestamp, data: callbackData.extend({ event: z.object({ event_group_id: z.string() }) }) }),
+  z.object({ type: z.literal("monitor.execution.completed"), timestamp: callbackTimestamp, data: callbackData.extend({ event: z.object({ type: z.literal("completion"), monitor_ts: z.string() }) }) }),
+  z.object({ type: z.literal("monitor.execution.failed"), timestamp: callbackTimestamp, data: callbackData.extend({ event: z.object({ type: z.literal("error"), error: z.string(), id: z.string(), date: callbackTimestamp }) }) }),
+]);
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 export class MonitorService {
   constructor(readonly store: MonitorStore, readonly provider: MonitorProvider = parallelMonitors, readonly send: (destination: Destination, text: string, key: string) => Promise<string> = sendLinq) {}
@@ -96,7 +102,6 @@ export class MonitorService {
       }
       await this.store.health(watch.id, event.type === "monitor.execution.failed" ? "failed" : "completed", event.timestamp);
       if (!watch.stopped && watch.status === "active" && event.type === "monitor.event.detected") {
-        if (!event.data.event) throw new Error("Missing event group");
         await this.store.enqueue("sync", `group:${watch.id}:${hash(event.data.event.event_group_id)}`, watch.id, { group: event.data.event.event_group_id });
       }
       return;
@@ -123,10 +128,11 @@ export class MonitorService {
     }
     if (watch.stopped || watch.status !== "active") return;
     if (job.kind === "send") {
-      if (!allowed(watch.destination)) throw new ProviderError(403);
       const payload = z.object({ text: z.string(), key: z.string(), eventId: z.string() }).parse(job.payload);
-      const accepted = await this.send(watch.destination, payload.text, payload.key);
-      await this.store.pool.query("UPDATE bell_monitor_events SET payload=jsonb_set(payload,'{delivery}', $3::jsonb) WHERE watch_id=$1 AND event_id=$2", [watch.id, payload.eventId, JSON.stringify({ status: "accepted", message_id: accepted })]);
+      await this.store.deliver(watch.id, payload.eventId, async current => {
+        if (!allowed(current.destination)) throw new ProviderError(403);
+        return this.send(current.destination, payload.text, payload.key);
+      });
       return;
     }
     if (job.kind === "sync") {

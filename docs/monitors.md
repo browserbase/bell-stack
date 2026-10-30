@@ -16,7 +16,7 @@ Apply the additive migration before deploying:
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/004_parallel_monitors.sql
 ```
 
-Monitor tables are independent of Link OAuth and can use the same database. Use a session-pooled connection. The worker uses short database transactions and bounded connection pools; this does not make the rest of Bell's Eve workflow storage durable or multi-instance safe.
+Monitor tables are independent of Link OAuth and can use the same database. Use a session-pooled connection. The worker uses bounded connection pools; delivery holds a watch row lock through the bounded Linq request to serialize with stopping. Other transactions are short; this does not make the rest of Bell's Eve workflow storage durable or multi-instance safe.
 
 Configure a scheduler to call `/api/parallel/monitors/process` every minute. Both GET and POST require `Authorization: Bearer <CRON_SECRET>`. For Vercel, add this to your deployment's `vercel.json` and configure `CRON_SECRET` in the environment:
 
@@ -32,7 +32,7 @@ The webhook verifies Standard Webhooks signatures and timestamp freshness, then 
 
 `active` means Parallel creation was confirmed. `dispatched` or `uncertain` means a create request may have succeeded. Bell never resends an uncertain create request. It searches the account's monitors for the exact opaque watch ID in metadata, including cancelled monitors. A crash just before sending can also leave an uncertain operation; inspect it instead of automatically creating a replacement.
 
-`watch_stop` immediately records local suppression and queues remote cancellation. `cancel_pending` means remote cancellation is not yet confirmed, so billing may continue. Missing messaging/webhook configuration does not block stopping. Missing provider credentials leave cancellation pending until repaired. A message already being sent cannot be recalled. Removing a sender from the allowlist prevents sends but does not cancel their monitors; the operator must cancel them through Parallel or repair the local cancellation job.
+`watch_stop` records local suppression and queues remote cancellation. It can wait for an in-flight send; once stopping succeeds, no new alert is dispatched. If a lock wait times out, retry stopping. `cancel_pending` means remote cancellation is not yet confirmed, so billing may continue. Missing messaging/webhook configuration does not block stopping. Missing provider credentials leave cancellation pending until repaired. A message already being sent cannot be recalled. Removing a sender from the allowlist prevents sends but does not cancel their monitors; the operator must cancel them through Parallel or repair the local cancellation job.
 
 Linq retries reuse a frozen message body and idempotency key. `accepted` records provider acceptance, not device delivery or human receipt. Never generate a new key to work around a send error, including a 404 for an expired/deleted idempotent message. Repeated event IDs are deduplicated; similar events with different IDs can still appear.
 

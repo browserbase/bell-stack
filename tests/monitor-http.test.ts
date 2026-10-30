@@ -1,13 +1,43 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Webhook, WebhookVerificationError } from "standardwebhooks";
 import { receiveWebhook, processMonitors } from "../server/monitors/http";
-import { type MonitorService } from "../server/monitors/service";
+import { MonitorService } from "../server/monitors/service";
 import { parallelMonitors, ProviderError, readBounded, sendLinq } from "../server/monitors/provider";
 import { watchDestination, watchIdentity } from "../agent/lib/monitors";
+import { MonitorStore, monitorStore } from "../server/monitors/store";
+import { Pool } from "pg";
 import type { ToolContext } from "eve/tools";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 describe("monitor HTTP boundaries", () => {
+  it.each([
+    ["monitor.event.detected", { event_group_id: "group-1" }],
+    ["monitor.execution.completed", { type: "completion", monitor_ts: "completed_2026-10-30T12:00:00Z" }],
+    ["monitor.execution.failed", { type: "error", error: "Execution failed", id: "error-1", date: "2026-10-30T12:00:00Z" }],
+  ])("accepts a signed Parallel %s callback", async (type, event) => {
+    const secret = `whsec_${Buffer.alloc(32, 3).toString("base64")}`;
+    vi.stubEnv("PARALLEL_WEBHOOK_SECRET", secret);
+    const pool = new Pool();
+    const store = new MonitorStore(pool);
+    const transaction = vi.spyOn(store, "transaction").mockResolvedValue(undefined);
+    const service = new MonitorService(store);
+    const now = new Date();
+    const body = JSON.stringify({ type, timestamp: now.toISOString().replace("Z", "+00:00"), data: { monitor_id: "monitor-1", event, metadata: {} } });
+    const headers = { "webhook-id": "callback-1", "webhook-timestamp": String(Math.floor(now.getTime() / 1000)), "webhook-signature": new Webhook(secret).sign("callback-1", now, body) };
+    try {
+      expect((await receiveWebhook(new Request("https://bell.example/webhook", { method: "POST", headers, body }), () => service)).status).toBe(204);
+      expect(transaction).toHaveBeenCalledOnce();
+    } finally { await pool.end(); }
+  });
+  it("handles idle database errors without exposing connection details", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://unused");
+    const pool = monitorStore().pool;
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() => pool.emit("error", new Error("sensitive connection details"))).not.toThrow();
+      expect(log).toHaveBeenCalledWith("Monitor database connection failed.");
+    } finally { await pool.end(); }
+  });
   it("authenticates both scheduler methods and fails closed without a secret", async () => {
     const process = vi.fn(async () => ({ processed: 1 }));
     const service = () => ({ process }) as unknown as MonitorService;
