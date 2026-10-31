@@ -14,8 +14,14 @@ const callbackSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("monitor.execution.failed"), timestamp: callbackTimestamp, data: callbackData.extend({ event: z.object({ type: z.literal("error"), error: z.string(), id: z.string(), date: callbackTimestamp }) }) }),
 ]);
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+// Saved place of a recovery scan, so a run stopped by the work budget resumes instead of refetching from the newest page.
+const syncProgress = z.object({
+  group: z.string().optional(), cursor: z.string().optional(), started: z.string().datetime().optional(), anchor: z.string().optional(),
+  anchor_seen: z.boolean().default(false), runs: z.array(z.string()).default([]), invalid: z.boolean().default(false), resumes: z.number().int().min(0).default(0),
+});
+const resumeLimit = 20;
 export class MonitorService {
-  constructor(readonly store: MonitorStore, readonly provider: MonitorProvider = parallelMonitors, readonly send: (destination: Destination, text: string, key: string) => Promise<string> = sendLinq) {}
+  constructor(readonly store: MonitorStore, readonly provider: MonitorProvider = parallelMonitors, readonly send: (destination: Destination, text: string, key: string) => Promise<string> = sendLinq, readonly budget = 20_000) {}
   async create(owner: Owner, destination: Destination, operation: string, input: string, cadence = "1d") {
     assertOwner(owner); destinationSchema.parse(destination);
     if (!allowed(destination)) throw new Error("This Linq destination is no longer allowed.");
@@ -76,12 +82,15 @@ export class MonitorService {
     });
   }
   async process() {
-    const deadline = Date.now() + 20_000;
+    const deadline = Date.now() + this.budget;
     await this.store.schedule();
     let processed = 0;
     while (processed < 30 && Date.now() < deadline) {
       const job = await this.store.claim(); if (!job) break;
-      try { await this.run(job, deadline); await this.store.finish(job); }
+      try {
+        const resume = await this.run(job, deadline);
+        if (resume) await this.store.defer(job, resume); else await this.store.finish(job);
+      }
       catch (error) {
         const provider = error instanceof ProviderError ? error : undefined;
         const terminal = !!provider && [400,401,402,403,404,422].includes(provider.status);
@@ -93,7 +102,8 @@ export class MonitorService {
     }
     return { processed };
   }
-  private async run(job: Job, deadline: number) {
+  /** Resolves to a saved payload when the work budget ran out mid-scan, so the next run resumes from there. */
+  private async run(job: Job, deadline: number): Promise<Record<string, unknown> | undefined> {
     if (job.kind === "inbox") {
       const payload = (await this.store.pool.query("SELECT payload FROM bell_monitor_inbox WHERE id=$1", [job.payload.id])).rows[0]?.payload;
       const event = callbackSchema.parse(payload);
@@ -152,16 +162,17 @@ export class MonitorService {
     }
     if (job.kind === "sync") {
       if (!watch.remote_id) throw new Error("Missing remote monitor");
-      const group = typeof job.payload.group === "string" ? job.payload.group : undefined;
-      let cursor: string | undefined;
-      const started = new Date();
-      let anchor: string | undefined, previousAnchorSeen = false;
-      const runs = new Set<string>();
-      let invalidEvents = false;
+      const saved = syncProgress.parse(job.payload);
+      const group = saved.group;
+      const started = saved.started ?? new Date().toISOString();
+      let cursor = saved.cursor, anchor = saved.anchor, previousAnchorSeen = saved.anchor_seen, invalidEvents = saved.invalid;
+      const runs = new Set(saved.runs);
       const prior = watch.scan_anchor?.match(/^(completion|error):(.*)$/);
       const priorTimestamp = prior ? monitorTimestamp.safeParse(prior[2]) : undefined;
       const previousAnchor = prior && priorTimestamp?.success ? `${prior[1]}:${priorTimestamp.data}` : watch.scan_anchor;
-      for (let page = 0; page < 10 && Date.now() < deadline; page++) {
+      // Each claim fetches at least one page, then stops on a page boundary so the saved cursor never splits a page.
+      for (let page = 0; page < 10; page++) {
+        if (page && Date.now() >= deadline) break;
         const result = await this.provider.events(watch.remote_id, group, cursor);
         const events = result.events.flatMap(raw => {
           const parsed = eventSchema.safeParse(raw);
@@ -172,18 +183,14 @@ export class MonitorService {
         const ids = events.flatMap(event => event.event_type === "event_stream" ? [event.event_id] : []);
         const known = new Set((await this.store.pool.query<{ event_id: string }>("SELECT event_id FROM bell_monitor_events WHERE watch_id=$1 AND event_id=ANY($2::text[])", [watch.id, ids])).rows.map(row => row.event_id));
         for (const event of events) {
-          if (Date.now() >= deadline) {
-            await this.store.pool.query("UPDATE bell_monitors SET recovery_gap=true WHERE id=$1", [watch.id]);
-            throw new Error("Recovery scan exceeded work budget");
-          }
           const identity = event.event_type === "event_stream" ? event.event_id : `${event.event_type}:${event.timestamp}`;
           anchor ??= identity;
           if (identity === previousAnchor) previousAnchorSeen = true;
-          runs.add(event.event_type === "event_stream" ? event.event_group_id : identity);
+          if (runs.size < 100) runs.add(event.event_type === "event_stream" ? event.event_group_id : identity);
           if (event.event_type !== "event_stream" || !known.has(event.event_id)) await this.event(watch, event);
         }
-        cursor = result.next_cursor ?? undefined;
-        if (!cursor) {
+        const next = result.next_cursor ?? undefined;
+        if (!next) {
           if (invalidEvents) {
             await this.store.pool.query("UPDATE bell_monitors SET recovery_gap=true WHERE id=$1", [watch.id]);
             throw new InvalidMonitorEvent("Invalid monitor event in recovery scan");
@@ -194,6 +201,11 @@ export class MonitorService {
           }
           return;
         }
+        cursor = next;
+      }
+      // Only resume while the scan keeps moving forward, so a stalled cursor still surfaces as a gap instead of looping.
+      if (cursor && cursor !== saved.cursor && saved.resumes < resumeLimit) {
+        return { group, cursor, started, anchor, anchor_seen: previousAnchorSeen, runs: [...runs], invalid: invalidEvents, resumes: saved.resumes + 1 };
       }
       await this.store.pool.query("UPDATE bell_monitors SET recovery_gap=true WHERE id=$1", [watch.id]);
       throw new Error("Recovery scan exceeded work budget");

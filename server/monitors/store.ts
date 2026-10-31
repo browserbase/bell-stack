@@ -103,13 +103,21 @@ export class MonitorStore {
       FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`, [randomUUID()])).rows[0];
   }
   async finish(job: Job) { await this.pool.query("DELETE FROM bell_monitor_jobs WHERE id=$1 AND lease_token=$2", [job.id, job.lease_token]); }
+  async defer(job: Job, payload: Record<string, unknown>) {
+    // Running out of work budget is not a failure: keep the saved place, release the attempt, and resume on the next claim.
+    await this.pool.query("UPDATE bell_monitor_jobs SET lease_until=NULL,lease_token=NULL,last_error=NULL,payload=$3,attempts=$4,next_at=now() WHERE id=$1 AND lease_token=$2", [job.id, job.lease_token, payload, Math.max(0, job.attempts - 1)]);
+  }
   async retry(job: Job, reason: string, terminal: boolean, delay: number) {
     await this.pool.query("UPDATE bell_monitor_jobs SET lease_until=NULL,lease_token=NULL,last_error=$3,failed=$4,next_at=now()+$5*interval '1 millisecond' WHERE id=$1 AND lease_token=$2", [job.id, job.lease_token, reason, terminal || job.attempts >= 8, delay]);
   }
   async schedule() {
     await this.transaction(async client => {
       const watches = (await client.query<{ id: string }>("UPDATE bell_monitors SET next_scan_at=now()+interval '1 hour' WHERE status='active' AND NOT stopped AND next_scan_at<=now() RETURNING id")).rows;
-      for (const watch of watches) await this.enqueue("sync", `sync:${watch.id}`, watch.id, {}, client);
+      for (const watch of watches) {
+        await this.enqueue("sync", `sync:${watch.id}`, watch.id, {}, client);
+        // An exhausted recovery scan keeps its saved progress and is restarted by the next scheduled check.
+        await client.query("UPDATE bell_monitor_jobs SET failed=false,attempts=0,next_at=now(),lease_until=NULL,lease_token=NULL WHERE id=$1 AND failed AND (lease_until IS NULL OR lease_until<now())", [`sync:${watch.id}`]);
+      }
     });
   }
   async health(id: string, health: string, timestamp: string) {

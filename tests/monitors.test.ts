@@ -380,6 +380,85 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     expect(send).toHaveBeenCalledTimes(2);
     expect((await service.list(owner))[0].recovery_gap).toBe(true);
   });
+  it("resumes a recovery scan stopped by the work budget without refetching pages or resending events", async () => {
+    const watch = await create();
+    await service.process();
+    expect(send).toHaveBeenCalledTimes(1);
+    const page = (id: number, next: string | null) => ({ events: [{ ...detected, event_id: `event-${id}`, event_group_id: `group-${id}` }], next_cursor: next });
+    const pages: Record<string, { events: unknown[]; next_cursor: string | null }> = {
+      start: page(2, "cursor-2"), "cursor-2": page(3, "cursor-3"), "cursor-3": page(4, "cursor-4"),
+      // The oldest page overlaps the previous scan's anchor, so coverage is complete and event-1 must not be resent.
+      "cursor-4": { events: [{ ...detected, event_id: "event-5", event_group_id: "group-5" }, detected], next_cursor: null },
+    };
+    const fetched: string[] = [];
+    provider.events = vi.fn(async (_id, _group, cursor) => {
+      fetched.push(cursor ?? "start");
+      await new Promise(resolve => setTimeout(resolve, 80));
+      return pages[cursor ?? "start"];
+    });
+    await pool.query("UPDATE bell_monitors SET next_scan_at=now() WHERE id=$1", [watch.id]);
+    // A work budget smaller than one page leaves each run able to fetch a single page, as a slow recovery does against the real 20 seconds.
+    const slow = new MonitorService(store, provider, send, 50);
+    const saved: unknown[] = [];
+    for (let run = 0; run < 10; run++) {
+      await slow.process();
+      const job = (await pool.query<{ attempts: number; failed: boolean; last_error: string | null; payload: { cursor?: string } }>("SELECT attempts,failed,last_error,payload FROM bell_monitor_jobs WHERE id=$1", [`sync:${watch.id}`])).rows[0];
+      if (!job) break;
+      expect(job).toMatchObject({ attempts: 0, failed: false, last_error: null });
+      saved.push(job.payload.cursor);
+    }
+    expect(saved).toEqual(["cursor-2", "cursor-3", "cursor-4"]);
+    expect(fetched).toEqual(["start", "cursor-2", "cursor-3", "cursor-4"]);
+    await service.process();
+    const [listedWatch] = await service.list(owner);
+    expect(listedWatch).toMatchObject({ recovery_gap: false, problems: [] });
+    expect(listedWatch.last_scan_at).not.toBeNull();
+    expect(send).toHaveBeenCalledTimes(5);
+    expect(new Set(send.mock.calls.map(call => call[2])).size).toBe(5);
+  });
+  it("keeps a budget-limited recovery scan alive past the eight-attempt limit", async () => {
+    const watch = await create();
+    await service.process();
+    provider.events = vi.fn(async (_id, _group, cursor) => {
+      const read = cursor ? Number(cursor.slice("cursor-".length)) : 1;
+      await new Promise(resolve => setTimeout(resolve, 80));
+      if (read > 11) return { events: [detected], next_cursor: null };
+      return { events: [{ ...detected, event_id: `event-${read}`, event_group_id: `group-${read}` }], next_cursor: `cursor-${read + 1}` };
+    });
+    await pool.query("UPDATE bell_monitors SET next_scan_at=now() WHERE id=$1", [watch.id]);
+    // Twelve pages at one page per budget-limited run take more runs than the eight attempts that used to mark the job failed.
+    const slow = new MonitorService(store, provider, send, 50);
+    let runs = 0;
+    for (; runs < 20; runs++) {
+      await slow.process();
+      const job = (await pool.query<{ attempts: number; failed: boolean }>("SELECT attempts,failed FROM bell_monitor_jobs WHERE id=$1", [`sync:${watch.id}`])).rows[0];
+      if (!job) break;
+      expect(job).toMatchObject({ attempts: 0, failed: false });
+    }
+    expect(runs).toBeGreaterThan(8);
+    await service.process();
+    expect((await service.list(owner))[0]).toMatchObject({ recovery_gap: false, problems: [] });
+    expect(new Set(send.mock.calls.map(call => call[2])).size).toBe(send.mock.calls.length);
+  });
+  it("restarts a recovery scan that already exhausted its attempts on the next scheduled check", async () => {
+    const watch = await create();
+    await service.process();
+    await pool.query("UPDATE bell_monitors SET next_scan_at=now() WHERE id=$1", [watch.id]);
+    provider.events = vi.fn(async () => { throw new Error("recovery unavailable"); });
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await service.process();
+      await pool.query("UPDATE bell_monitor_jobs SET next_at=now() WHERE id=$1", [`sync:${watch.id}`]);
+    }
+    expect((await pool.query<{ failed: boolean }>("SELECT failed FROM bell_monitor_jobs WHERE id=$1", [`sync:${watch.id}`])).rows[0]).toMatchObject({ failed: true });
+    provider.events = vi.fn(async () => ({ events: [detected], next_cursor: null }));
+    await service.process();
+    expect(provider.events).not.toHaveBeenCalled();
+    await pool.query("UPDATE bell_monitors SET next_scan_at=now() WHERE id=$1", [watch.id]);
+    await service.process();
+    expect(provider.events).toHaveBeenCalled();
+    expect((await pool.query("SELECT 1 FROM bell_monitor_jobs WHERE id=$1", [`sync:${watch.id}`])).rowCount).toBe(0);
+    expect((await service.list(owner))[0].last_scan_at).not.toBeNull();
+  });
   it("keeps valid citations when another URL is unsafe", async () => {
     await create();
     provider.events = vi.fn(async () => ({ events: [{ ...detected, output: { ...detected.output, basis: [{ citations: [{ url: "http://localhost/private" }, { url: "https://example.com/release" }] }] } }], next_cursor: null }));
