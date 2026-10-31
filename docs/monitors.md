@@ -1,6 +1,6 @@
 # Persistent public-web watches
 
-Ask Bell through an allowlisted, direct Linq conversation to watch a public topic. Bell creates a Parallel `event_stream` monitor using `lite`, without historical backfill. Research frequency defaults to daily and accepts whole hours, days, or weeks from `1h` through `30d`, including `6h` and `1w`. Faster checks increase scheduled usage; alerts still require detected changes. `watch_list` shows the newest 50 watches, their frequencies, and recent updates. `watch_update` changes an active watch's frequency; `watch_stop` cancels it permanently. Use a precise query describing the material changes you care about. Do not include private browser content or secrets.
+Ask Bell through an allowlisted, direct Linq conversation to watch a public topic. Bell creates a Parallel `event_stream` monitor using `lite`, without historical backfill. Research frequency defaults to daily and accepts whole hours, days, or weeks from `1h` through `30d`, including `6h` and `1w`. Faster checks increase scheduled usage; alerts still require detected changes. `watch_list` shows 50 watches per page with their frequencies and recent updates. `watch_update` changes an active watch's frequency; `watch_stop` cancels it permanently. Use a precise query describing the material changes you care about. Do not include private browser content or secrets.
 
 Parallel schedules the research. Bell stores ownership, events, and pending messages in PostgreSQL, then sends cited updates directly through Linq. Alerts do not use a model, Browserbase, or an Eve session, so the 24-hour session timeout does not end a watch. Existing search, browsing, and messaging still work without monitor configuration.
 
@@ -30,6 +30,10 @@ Configure a scheduler to call `/api/parallel/monitors/process` every minute. Bot
 Vercel supplies the bearer header on its GET request. Hobby only supports daily cron jobs; minute-level delivery requires a suitable plan or an external scheduler making authenticated POST requests. Deploying the code alone does not activate processing. Verify successful scheduler invocations before creating a watch. The worker processes at most 30 jobs per invocation with a 20-second work-start budget, 8-second provider timeouts, and 60-second leases. The route allows 60 seconds for the final request and database cleanup.
 
 The webhook verifies Standard Webhooks signatures and timestamp freshness, then commits the callback before acknowledging. The worker fetches the actual events from Parallel. The saved sender and receiving line must still match Bell's allowlist before each outgoing send. Recipients cannot be supplied through tool arguments or callback metadata.
+
+## Listing watches
+
+`watch_list` returns one page of up to 50 watches in `watches`, plus a `next_cursor`. Open watches come first, then cancelled and failed ones, newest first within each group, so an older running watch stays on the first page no matter how many newer watches were cancelled after it. When `next_cursor` is not null there are older watches; pass it back as `cursor` to read the next page. The cursor is opaque and encodes a position in this order rather than an offset, so pages do not shift when a watch changes status between calls; an unusable cursor is rejected and the caller should list again without one. `status` accepts `all` (default), `open` for watches that are neither cancelled nor failed, and `closed` for those that are. Recent updates are additionally capped by a per-call content budget, reported as `updates_truncated` on each watch.
 
 ## Status and recovery
 

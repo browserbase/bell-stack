@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
+import { z } from "zod";
 import { type Destination, type Owner, required } from "./config";
 
 export interface Watch {
@@ -8,6 +9,23 @@ export interface Watch {
   created_at: Date; last_scan_at: Date | null; scan_anchor: string | null; recovery_gap: boolean;
 }
 export interface Job { id: string; watch_id: string | null; kind: string; payload: Record<string, unknown>; attempts: number; lease_token: string }
+export type ListedWatch = Watch & { updates: unknown[]; problems: unknown[] };
+/** `open` keeps watches that may still run or still need repair; `closed` is everything already cancelled or failed. */
+export const watchFilter = z.enum(["all", "open", "closed"]);
+export type WatchFilter = z.infer<typeof watchFilter>;
+export const watchPageSize = 50;
+const closedStatuses = "'cancelled','failed'";
+// Keyset page marker for the (rank, created_at DESC, id DESC) order, opaque to the agent so the ordering can change.
+const cursorSchema = z.object({ rank: z.int().min(0).max(1), created_at: z.string().datetime(), id: z.uuid() });
+const encodeCursor = (value: z.infer<typeof cursorSchema>) => Buffer.from(JSON.stringify(value)).toString("base64url");
+function decodeCursor(cursor: string) {
+  try {
+    if (cursor.length > 512) throw new Error("Cursor too long");
+    return cursorSchema.parse(JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")));
+  } catch {
+    throw new Error("Watch operation received an unusable page cursor. List watches again without a cursor.");
+  }
+}
 export class MonitorStore {
   constructor(readonly pool: Pool) {}
   async transaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -91,10 +109,19 @@ export class MonitorStore {
       await client.query("UPDATE bell_monitor_events SET payload=jsonb_set(payload,'{delivery}', $3::jsonb) WHERE watch_id=$1 AND event_id=$2", [id, eventId, JSON.stringify({ status: "accepted", message_id: accepted })]);
     });
   }
-  async list(owner: Owner) {
-    return (await this.pool.query<Watch & { updates: unknown[]; problems: unknown[] }>(`SELECT w.*, COALESCE((SELECT jsonb_agg(e.payload) FROM (SELECT payload FROM bell_monitor_events WHERE watch_id=w.id ORDER BY received_at DESC LIMIT 5) e),'[]') AS updates,
+  async list(owner: Owner, filter: WatchFilter = "all", cursor?: string): Promise<{ watches: ListedWatch[]; next_cursor: string | null }> {
+    const from = cursor ? decodeCursor(cursor) : undefined;
+    const rows = (await this.pool.query<ListedWatch & { rank: number }>(`WITH scoped AS (
+        SELECT w.*, (CASE WHEN w.status IN (${closedStatuses}) THEN 1 ELSE 0 END) AS rank FROM bell_monitors w WHERE issuer=$1 AND owner_id=$2)
+      SELECT w.*, COALESCE((SELECT jsonb_agg(e.payload) FROM (SELECT payload FROM bell_monitor_events WHERE watch_id=w.id ORDER BY received_at DESC LIMIT 5) e),'[]') AS updates,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',kind,'error',last_error,'failed',failed)) FROM bell_monitor_jobs WHERE watch_id=w.id AND last_error IS NOT NULL),'[]') AS problems
-      FROM bell_monitors w WHERE issuer=$1 AND owner_id=$2 ORDER BY created_at DESC LIMIT 50`, [owner.issuer, owner.id])).rows;
+      FROM scoped w WHERE ($3::int IS NULL OR w.rank=$3)
+        AND ($4::int IS NULL OR w.rank>$4 OR (w.rank=$4 AND (w.created_at<$5::timestamptz OR (w.created_at=$5::timestamptz AND w.id<$6::uuid))))
+      ORDER BY w.rank, w.created_at DESC, w.id DESC LIMIT ${watchPageSize + 1}`,
+      [owner.issuer, owner.id, filter === "all" ? null : filter === "closed" ? 1 : 0, from?.rank ?? null, from?.created_at ?? null, from?.id ?? null])).rows;
+    const watches = rows.slice(0, watchPageSize);
+    const last = rows.length > watchPageSize ? watches[watches.length - 1] : undefined;
+    return { watches, next_cursor: last ? encodeCursor({ rank: last.rank, created_at: last.created_at.toISOString(), id: last.id }) : null };
   }
   async claim(): Promise<Job | undefined> {
     return (await this.pool.query<Job>(`UPDATE bell_monitor_jobs SET lease_until=now()+interval '60 seconds',lease_token=$1,attempts=attempts+1 WHERE id=(

@@ -3,7 +3,7 @@ import { Webhook } from "standardwebhooks";
 import { z } from "zod";
 import { allowed, assertOwner, creationOrigin, destinationSchema, type Destination, type Owner, queryInput, required, frequencyInput, monitorTimestamp } from "./config";
 import { eventSchema, type MonitorProvider, parallelMonitors, ProviderError, sendLinq } from "./provider";
-import { type Job, type Watch, MonitorStore, monitorStore } from "./store";
+import { type Job, type Watch, MonitorStore, monitorStore, watchFilter } from "./store";
 
 const callbackTimestamp = monitorTimestamp;
 class InvalidMonitorEvent extends Error {}
@@ -40,10 +40,12 @@ export class MonitorService {
     const result = await this.store.get(watch.id);
     return { id: result.id, status: result.status, frequency: result.frequency, pending_frequency: result.pending_frequency, processor: "lite" };
   }
-  async list(owner: Owner) {
+  async list(owner: Owner, options: { status?: string; cursor?: string } = {}) {
     assertOwner(owner);
+    const status = watchFilter.parse(options.status ?? "all");
+    const page = await this.store.list(owner, status, options.cursor);
     let remaining = 12_000;
-    return (await this.store.list(owner)).map(w => {
+    const watches = page.watches.map(w => {
       const updates: unknown[] = [];
       for (const raw of w.updates) {
         if (remaining <= 0) break;
@@ -60,6 +62,7 @@ export class MonitorService {
       }
       return { id: w.id, query: w.query.slice(0, 400), status: w.status, frequency: w.frequency, pending_frequency: w.pending_frequency, health: w.health, health_at: w.health_at, recovery_gap: w.recovery_gap, last_scan_at: w.last_scan_at, updates, updates_truncated: updates.length < w.updates.length, problems: w.problems };
     });
+    return { watches, next_cursor: page.next_cursor };
   }
   async update(owner: Owner, id: string, cadence: string) {
     assertOwner(owner); z.string().uuid().parse(id);

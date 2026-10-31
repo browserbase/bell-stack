@@ -57,6 +57,8 @@ alert guarantee; send updates only for detected changes. Use watch_update to cha
 watch's frequency without replacing it. A non-null pending_frequency is a queued or unresolved
 change, not confirmation; use watch_list to check completion and failures. Never include secrets or
 private browser content in a watch query. Use watch_list for recent updates and recovery status.
+watch_list returns one page of watches: when its next_cursor is not null, pass that back as cursor
+before concluding that a watch does not exist, or narrow the search with status.
 If creation is uncertain, list the existing watch instead of creating a replacement. A pending
 watch is not confirmed active. Use watch_stop to cancel permanently; cancel_pending means
 alerts are suppressed locally but upstream execution and billing may continue until confirmed.

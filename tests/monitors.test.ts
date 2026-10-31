@@ -60,6 +60,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
   afterEach(() => vi.unstubAllEnvs());
   afterAll(async () => { await pool?.end(); if (admin) { await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); } });
   const create = (operation = "session/call") => service.create(owner, destination, operation, "Watch public product releases");
+  const listed = async () => (await service.list(owner)).watches;
   async function callback(id: string, webhookId = randomUUID()) {
     const body = JSON.stringify({ type: "monitor.event.detected", timestamp: new Date().toISOString(), data: { monitor_id: `monitor-${id}`, event: { event_group_id: "group-1" }, metadata: { bell_watch_id: id } } });
     const timestamp = new Date();
@@ -82,13 +83,13 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     const watch = await service.create(owner, destination, "six-hour", "Public releases", "6h");
     expect(watch.frequency).toBe("6h");
     expect(remote.find(m => m.monitor_id === `monitor-${watch.id}`)?.frequency).toBe("6h");
-    expect((await service.list(owner)).find(w => w.id === watch.id)?.frequency).toBe("6h");
+    expect((await listed()).find(w => w.id === watch.id)?.frequency).toBe("6h");
     await expect(service.create(owner, destination, "six-hour", "Public releases", "1d")).rejects.toThrow("different input");
   });
   it("keeps creation replay stable after a confirmed frequency change", async () => {
     const watch = await create();
     expect(await service.update(owner, watch.id, "6h")).toMatchObject({ frequency: "1d", pending_frequency: "6h" });
-    expect((await service.list(owner))[0]).toMatchObject({ frequency: "1d", pending_frequency: "6h" });
+    expect((await listed())[0]).toMatchObject({ frequency: "1d", pending_frequency: "6h" });
     await new MonitorService(new MonitorStore(pool), provider, send).process();
     expect(await create()).toMatchObject({ frequency: "6h", pending_frequency: null });
     expect(provider.create).toHaveBeenCalledTimes(1);
@@ -129,11 +130,11 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     provider.update = vi.fn(async (id, frequency) => { await update(id, frequency); throw new Error("response lost"); });
     await service.update(owner, watch.id, "6h");
     await service.process();
-    expect((await service.list(owner))[0]).toMatchObject({ frequency: "1d", pending_frequency: "6h", problems: [expect.objectContaining({ kind: "update" })] });
+    expect((await listed())[0]).toMatchObject({ frequency: "1d", pending_frequency: "6h", problems: [expect.objectContaining({ kind: "update" })] });
     provider.update = update;
     await pool.query("UPDATE bell_monitor_jobs SET next_at=now() WHERE kind='update'");
     await new MonitorService(new MonitorStore(pool), provider, send).process();
-    expect((await service.list(owner))[0]).toMatchObject({ frequency: "6h", pending_frequency: null });
+    expect((await listed())[0]).toMatchObject({ frequency: "6h", pending_frequency: null });
     expect(provider.create).toHaveBeenCalledTimes(1);
   });
   it("retains a failed update for repair and rejects an unconfirmed response", async () => {
@@ -144,7 +145,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     provider.update = vi.fn(async () => { throw new ProviderError(403); });
     await pool.query("UPDATE bell_monitor_jobs SET next_at=now() WHERE kind='update'");
     await service.process();
-    expect((await service.list(owner))[0]).toMatchObject({ frequency: "1d", pending_frequency: "6h", problems: [expect.objectContaining({ kind: "update", failed: true, error: "provider_http_403" })] });
+    expect((await listed())[0]).toMatchObject({ frequency: "1d", pending_frequency: "6h", problems: [expect.objectContaining({ kind: "update", failed: true, error: "provider_http_403" })] });
     await service.stop(owner, watch.id);
     expect((await store.get(watch.id)).pending_frequency).toBeNull();
   });
@@ -184,7 +185,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     provider.events = vi.fn(async () => ({ events: [detected, { event_type: "completion", timestamp: "invalid" }] }));
     await service.process();
     expect(send).toHaveBeenCalledOnce();
-    expect((await service.list(owner))[0]).toMatchObject({ recovery_gap: true, last_scan_at: null, problems: [expect.objectContaining({ kind: "sync", error: "invalid_monitor_event" })] });
+    expect((await listed())[0]).toMatchObject({ recovery_gap: true, last_scan_at: null, problems: [expect.objectContaining({ kind: "sync", error: "invalid_monitor_event" })] });
     await pool.query("UPDATE bell_monitor_jobs SET next_at=now() WHERE kind='sync'");
     await service.process();
     expect(send).toHaveBeenCalledOnce();
@@ -193,7 +194,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     const [a, b] = await Promise.all([create(), create()]);
     expect(a.id).toBe(b.id);
     expect(provider.create).toHaveBeenCalledTimes(1);
-    expect(await service.list({ issuer: "linq", id: "linq:other" })).toEqual([]);
+    expect(await service.list({ issuer: "linq", id: "linq:other" })).toMatchObject({ watches: [], next_cursor: null });
     await expect(service.stop({ issuer: "linq", id: "linq:other" }, a.id)).rejects.toThrow("Watch not found");
     await expect(service.create(owner, destination, "session/call", "Changed query")).rejects.toThrow("different input");
   });
@@ -205,7 +206,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     await create();
     await service.process();
     expect(provider.create).toHaveBeenCalledTimes(1);
-    expect((await service.list(owner))[0].status).toBe("active");
+    expect((await listed())[0].status).toBe("active");
   });
   it("delivers a signed event after service replacement without an Eve session, once across workers", async () => {
     const watch = await create();
@@ -218,7 +219,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][0]).toEqual(destination);
     expect(send.mock.calls[0][1]).toContain("https://example.com/release");
-    expect((await service.list(owner))[0].updates).toHaveLength(1);
+    expect((await listed())[0].updates).toHaveLength(1);
   });
   it("reuses frozen delivery and key after an accepted send loses its response", async () => {
     const watch = await create(); await callback(watch.id);
@@ -235,7 +236,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     await service.stop(owner, watch.id); await service.process();
     expect(send).not.toHaveBeenCalled();
     expect(provider.cancel).toHaveBeenCalledWith(`monitor-${watch.id}`);
-    expect((await service.list(owner))[0].status).toBe("cancelled");
+    expect((await listed())[0].status).toBe("cancelled");
   });
   it("suppresses a claimed send when stop commits after the worker reads the watch", async () => {
     const watch = await create();
@@ -310,14 +311,14 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     ] }));
     await service.process();
     expect(send).toHaveBeenCalledOnce();
-    expect((await service.list(owner))[0]).toMatchObject({ health: "completed", recovery_gap: false, problems: [] });
+    expect((await listed())[0]).toMatchObject({ health: "completed", recovery_gap: false, problems: [] });
   });
   it("records completion and errors without event IDs and does not send health messages", async () => {
     await create();
     provider.events = vi.fn(async () => ({ events: [{ event_type: "completion", timestamp: "2026-10-30T12:00:00Z" }, { event_type: "error", timestamp: "2026-10-29T12:00:00Z", error_message: "quota" }], next_cursor: null }));
     await service.process();
     expect(send).not.toHaveBeenCalled();
-    const [watch] = await service.list(owner);
+    const [watch] = await listed();
     expect(watch.health).toBe("completed");
   });
   it("never redispatches creation after a crash at the dispatch boundary", async () => {
@@ -336,7 +337,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     await service.stop(owner, watch.id);
     await service.process();
     expect(remote[0].status).toBe("cancelled");
-    expect((await service.list(owner))[0].status).toBe("cancelled");
+    expect((await listed())[0].status).toBe("cancelled");
     expect(send).not.toHaveBeenCalled();
   });
   it("retains an early callback until remote identity can be verified", async () => {
@@ -367,7 +368,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     expect((await service.stop(owner, watch.id)).status).toBe("cancel_pending");
     await service.process();
     expect((await store.get(watch.id)).stopped).toBe(true);
-    expect((await service.list(owner))[0].problems).not.toEqual([]);
+    expect((await listed())[0].problems).not.toEqual([]);
     expect(send).not.toHaveBeenCalled();
   });
   it("surfaces lost history and handles overlapping pages without duplicate sends", async () => {
@@ -378,7 +379,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     provider.events = vi.fn(async (_id, _group, cursor) => cursor ? { events: [newer], next_cursor: null } : { events: [newer], next_cursor: "page-2" });
     await service.process();
     expect(send).toHaveBeenCalledTimes(2);
-    expect((await service.list(owner))[0].recovery_gap).toBe(true);
+    expect((await listed())[0].recovery_gap).toBe(true);
   });
   it("resumes a recovery scan stopped by the work budget without refetching pages or resending events", async () => {
     const watch = await create();
@@ -410,7 +411,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     expect(saved).toEqual(["cursor-2", "cursor-3", "cursor-4"]);
     expect(fetched).toEqual(["start", "cursor-2", "cursor-3", "cursor-4"]);
     await service.process();
-    const [listedWatch] = await service.list(owner);
+    const [listedWatch] = await listed();
     expect(listedWatch).toMatchObject({ recovery_gap: false, problems: [] });
     expect(listedWatch.last_scan_at).not.toBeNull();
     expect(send).toHaveBeenCalledTimes(5);
@@ -437,7 +438,7 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     }
     expect(runs).toBeGreaterThan(8);
     await service.process();
-    expect((await service.list(owner))[0]).toMatchObject({ recovery_gap: false, problems: [] });
+    expect((await listed())[0]).toMatchObject({ recovery_gap: false, problems: [] });
     expect(new Set(send.mock.calls.map(call => call[2])).size).toBe(send.mock.calls.length);
   });
   it("restarts a recovery scan that already exhausted its attempts on the next scheduled check", async () => {
@@ -457,7 +458,29 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     await service.process();
     expect(provider.events).toHaveBeenCalled();
     expect((await pool.query("SELECT 1 FROM bell_monitor_jobs WHERE id=$1", [`sync:${watch.id}`])).rowCount).toBe(0);
-    expect((await service.list(owner))[0].last_scan_at).not.toBeNull();
+    expect((await listed())[0].last_scan_at).not.toBeNull();
+  });
+  it("keeps an active watch reachable behind newer cancelled watches and pages the rest", async () => {
+    const active = await create();
+    for (let index = 0; index < 50; index++) {
+      await pool.query(`INSERT INTO bell_monitors(id,issuer,owner_id,operation,query,destination,status,creation_frequency,frequency,created_at)
+        VALUES($1,$2,$3,$4,'Cancelled watch',$5,'cancelled','1d','1d',now()+($6||' seconds')::interval)`, [randomUUID(), owner.issuer, owner.id, `cancelled-${index}`, destination, index + 1]);
+    }
+    const first = await service.list(owner);
+    expect(first.watches).toHaveLength(50);
+    expect(first.watches[0].id).toBe(active.id);
+    expect(first.next_cursor).toEqual(expect.any(String));
+    const second = await service.list(owner, { cursor: first.next_cursor! });
+    expect(second.watches).toHaveLength(1);
+    expect(second.next_cursor).toBeNull();
+    expect(new Set([...first.watches, ...second.watches].map(w => w.id)).size).toBe(51);
+    expect(await service.list(owner, { status: "open" })).toMatchObject({ watches: [expect.objectContaining({ id: active.id })], next_cursor: null });
+    const closed = await service.list(owner, { status: "closed" });
+    expect(closed.watches).toHaveLength(50);
+    expect(closed.watches.every(w => w.status === "cancelled")).toBe(true);
+    expect(closed.next_cursor).toBeNull();
+    await expect(service.list(owner, { cursor: "not-a-cursor" })).rejects.toThrow("page cursor");
+    await expect(service.list(owner, { status: "retired" })).rejects.toThrow();
   });
   it("keeps valid citations when another URL is unsafe", async () => {
     await create();
