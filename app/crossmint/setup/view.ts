@@ -18,9 +18,15 @@ export interface Budget {
   inUse: boolean;
   /** Active and not yet expired when the page was rendered. */
   live: boolean;
+  /**
+   * With paying in Bell's browser switched on, the order intent Crossmint's verification component
+   * needs when a Visa or Mastercard rail is still pending verification.
+   */
+  verify?: OrderIntentSummary;
 }
 
-export function budgetView(intent: OrderIntentSummary, configuredId?: string, now = Date.now()): Budget {
+export function budgetView(intent: OrderIntentSummary, configuredId?: string, now = Date.now(), cards = false): Budget {
+  const pending = intent.rails.some((rail) => rail.rail === "agentic-token" && rail.status === "pending_verification");
   const host = intent.merchant?.url ? URL.parse(intent.merchant.url)?.hostname : undefined;
   return {
     id: intent.orderIntentId,
@@ -35,6 +41,7 @@ export function budgetView(intent: OrderIntentSummary, configuredId?: string, no
     networkRail: intent.rails.some((rail) => rail.rail === "agentic-token" && rail.status === "active"),
     inUse: Boolean(configuredId) && intent.orderIntentId === configuredId,
     live: intent.status === "active" && Date.parse(intent.expiresAt) > now,
+    ...(cards && pending && intent.verificationConfig ? { verify: intent } : {}),
   };
 }
 

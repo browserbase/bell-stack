@@ -130,6 +130,17 @@ describe("Crossmint setup page", () => {
     expect(props.jwt).toBeUndefined();
   });
 
+  it("offers the card network's verification only when paying in Bell's browser is switched on", async () => {
+    incoming.headers.set("authorization", basic);
+    const pending = intent("oi_in_use", "2026-12-01T00:00:00.000Z", [{ rail: "agentic-token", provider: "vic", status: "pending_verification", credentialFormats: ["card"] }]);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json([{ ...pending, verificationConfig: { allowanceId: "al_1", environment: "production", publicApiKey: "pk_1" } }])));
+    const off = setupProps(await CrossmintSetupPage())!;
+    expect((off.budgets as { verify?: unknown }[])[0].verify).toBeUndefined();
+    vi.stubEnv("CROSSMINT_CARD_CHECKOUT", "1");
+    const on = setupProps(await CrossmintSetupPage())!;
+    expect((on.budgets as { verify?: { orderIntentId: string } }[])[0].verify).toMatchObject({ orderIntentId: "oi_in_use", verificationConfig: { allowanceId: "al_1" } });
+  });
+
   it("names a missing setting instead of calling Crossmint", async () => {
     incoming.headers.set("authorization", basic);
     vi.stubEnv("CROSSMINT_PROJECT_ID", "");

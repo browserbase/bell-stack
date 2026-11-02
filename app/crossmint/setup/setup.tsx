@@ -1,6 +1,6 @@
 "use client";
 
-import { CrossmintPaymentMethodManagement, CrossmintProvider } from "@crossmint/client-sdk-react-ui";
+import { CrossmintPaymentMethodManagement, CrossmintProvider, OrderIntentVerification } from "@crossmint/client-sdk-react-ui";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useRef, useState, useTransition, type FormEvent, type InputHTMLAttributes, type ReactNode } from "react";
@@ -221,8 +221,16 @@ function Input({ label, name, ...rest }: { label: string; name: string } & Input
   );
 }
 
-function BudgetRow({ budget, onCancel }: { budget: Budget; onCancel: (id: string) => void }) {
+// The card network's verification window, in Crossmint's colors.
+const verificationAppearance = {
+  variables: { borderRadius: "8px", colors: { accent: "#00C768", textPrimary: "#0A1825", textSecondary: "#6B7280", border: "#E5E7EB", success: "#00A846" } },
+};
+
+function BudgetRow({ budget, apiKey, onCancel }: { budget: Budget; apiKey?: string; onCancel: (id: string) => void }) {
+  const router = useRouter();
   const [show, setShow] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState("");
   const live = budget.live;
   return (
     <>
@@ -244,10 +252,34 @@ function BudgetRow({ budget, onCancel }: { budget: Budget; onCancel: (id: string
         <td className={styles.rowActions}>
           {budget.inUse ? <span className={`${styles.pill} ${styles.ok}`}>In use</span> : null}
           {!live ? <span className={`${styles.pill} ${styles.todo}`}>{budget.status}</span> : null}
+          {live && budget.verify && apiKey ? (
+            <button type="button" className={styles.ghostButton} onClick={() => { setVerifyError(""); setVerifying(true); }}>Verify card</button>
+          ) : null}
           {live && !budget.inUse ? <button type="button" className={styles.ghostButton} onClick={() => setShow(!show)}>Use</button> : null}
           {live ? <button type="button" className={styles.dangerButton} onClick={() => onCancel(budget.id)}>Cancel</button> : null}
         </td>
       </tr>
+      {verifying && budget.verify && apiKey ? (
+        <tr>
+          <td colSpan={5} className={styles.useRow}>
+            Your card network asks you to confirm this budget, by code or passkey, before Bell can pay in its own browser.
+            <CrossmintProvider apiKey={apiKey} consoleLogLevel="error">
+              <OrderIntentVerification
+                orderIntent={budget.verify as unknown as Parameters<typeof OrderIntentVerification>[0]["orderIntent"]}
+                displayName="Bell"
+                appearance={verificationAppearance}
+                onVerificationComplete={() => { setVerifying(false); router.refresh(); }}
+                onVerificationError={() => { setVerifying(false); setVerifyError("The card network did not confirm the budget. Try again."); }}
+              />
+            </CrossmintProvider>
+          </td>
+        </tr>
+      ) : null}
+      {verifyError ? (
+        <tr>
+          <td colSpan={5} className={styles.useRow}><span className={styles.errorText}>{verifyError}</span></td>
+        </tr>
+      ) : null}
       {show ? (
         <tr>
           <td colSpan={5} className={styles.useRow}>
@@ -338,7 +370,7 @@ function CardAndBudget({ apiKey, budgets, defaults, ready }: { apiKey?: string; 
             <thead>
               <tr><th>Store</th><th>Left</th><th>Expires</th><th>Card rails</th><th /></tr>
             </thead>
-            <tbody>{budgets.map((budget) => <BudgetRow key={budget.id} budget={budget} onCancel={cancel} />)}</tbody>
+            <tbody>{budgets.map((budget) => <BudgetRow key={budget.id} budget={budget} apiKey={apiKey} onCancel={cancel} />)}</tbody>
           </table>
         </div>
       ) : null}
@@ -425,7 +457,9 @@ function CardAndBudget({ apiKey, budgets, defaults, ready }: { apiKey?: string; 
           <p className={styles.muted}>
             {result.networkRail
               ? "The card has a Visa or Mastercard agent rail, so Bell can also pay in its own browser."
-              : "Crossmint checkouts pay this card through Crossmint's encrypted card, so no network rail is needed."}
+              : result.verify
+                ? "Crossmint checkouts can pay with it now. To let Bell also pay in its own browser, use Verify card in the list above."
+                : "Crossmint checkouts pay this card through Crossmint's encrypted card, so no network rail is needed."}
           </p>
           <p>Add this line to .env.local and restart Bell:</p>
           <CopyLine value={`CROSSMINT_ORDER_INTENT_ID=${result.id}`} />

@@ -3,6 +3,7 @@
 import { routeAuth } from "eve/channels/auth";
 import { headers } from "next/headers";
 import { z } from "zod";
+import { isCrossmintCardsConfigured } from "../../../server/crossmint/cards";
 import { AMOUNT, createBuyerProfile, CrossmintRequestError, CrossmintSetupError } from "../../../server/crossmint/client";
 import {
   cancelOrderIntent,
@@ -124,7 +125,7 @@ export async function approveBudget(input: z.input<typeof budgetInput>): Promise
       description: value.description,
       expiresAt: new Date(Date.now() + value.days * 86_400_000).toISOString(),
     }, { idempotencyKey: `bell-budget-${value.idempotencyKey}` });
-    return { ok: true, budget: budgetView(intent, process.env.CROSSMINT_ORDER_INTENT_ID?.trim()) };
+    return { ok: true, budget: budgetView(intent, process.env.CROSSMINT_ORDER_INTENT_ID?.trim(), undefined, isCrossmintCardsConfigured()) };
   } catch (error) {
     return failure(error);
   }

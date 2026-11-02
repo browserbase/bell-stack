@@ -19,7 +19,8 @@ Bell -> create run (URL, task, cap) -> Crossmint works through the store's check
 The checkout runs in Crossmint's service, not in this conversation's browser, so it needs no
 Browserbase plan and works the same with Bell's local browser. Nothing in the Link integration, the
 browser runtime, or the hooks changes. With the Crossmint variables unset, both tools answer
-`not_configured`.
+`not_configured`. To keep the checkout in this conversation's browser and pay with a one-time card
+instead, see [Agent Cards in Bell's browser](#agent-cards-in-bells-browser).
 
 ## Configure
 
@@ -237,3 +238,173 @@ References: [Agent Checkouts overview](https://docs.crossmint.com/agents/checkou
 [custom JWT authentication](https://docs.crossmint.com/introduction/platform/api-keys/custom-jwt-auth-guide),
 [statuses and codes](https://docs.crossmint.com/agents/checkouts/statuses),
 [API reference](https://docs.crossmint.com/api-reference/agent-checkouts).
+
+## Agent Cards in Bell's browser
+
+`crossmint_card_checkout` keeps the checkout in this conversation's browser and pays with a
+[Crossmint agent card](https://docs.crossmint.com/agents/cards/overview). Bell drives the merchant
+page with its usual tools and maps the card inputs with exact CSS selectors. The tool mints a
+one-time card from the budget the person approved on the setup page and fills it on the server. The
+card is the person's own, enrolled in Visa Intelligent Commerce or Mastercard Agent Pay, so rewards,
+refunds, and chargeback rights work as for any purchase on it.
+
+```text
+Bell -> merchant checkout in Bell's browser -> card inputs mapped by CSS selector
+     -> crossmint_card_checkout              -> Eve asks the person to approve the exact total
+     -> server reads the order intent        -> status, merchant, currency, balance, expiry, rail
+     -> one-time card, minted once           -> filled, pay pressed once, browser goes private
+```
+
+Mastercard credit and debit cards from any country work through Mastercard Agent Pay. U.S.-issued
+Visa credit and debit cards work through Visa Intelligent Commerce, except business, prepaid, Chase,
+and Fidelity cards. Any other card is refused with `no_card_rail`; Agent Checkouts above takes it.
+
+### Configure
+
+Agent Cards uses the Agent Checkouts settings and the setup keys above, and is off until you turn it
+on: until then `crossmint_card_checkout` answers `not_configured`, and the database requirement below
+does not apply. The setup keys alone only approve budgets for Agent Checkouts. The browser lock that
+makes card entry safe needs `LINK_SANDBOX=0` and `DATABASE_URL`; without the lock, Bell refuses before
+any card is issued.
+
+```dotenv
+# Turn on paying in Bell's own browser with a one-time card.
+CROSSMINT_CARD_CHECKOUT=1
+# Optional. Exact payment-frame origins per merchant origin, as a JSON object.
+CROSSMINT_CHECKOUT_ORIGINS={}
+DATABASE_URL=
+```
+
+The card path needs PostgreSQL. With `DATABASE_URL` exported, apply the browser privacy table:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/003_link_checkout.sql
+```
+
+Once card numbers have been typed into a browser, Bell records that conversation's browser there
+and refuses every later browser tool on it. With Agent Cards on, every browser tool needs the
+database.
+
+`CROSSMINT_CHECKOUT_ORIGINS` maps a merchant origin to the origins of its payment frames, such as a
+payment provider's card iframe, for example `{"https://shop.example":["https://pay.example"]}`. Bell
+fills inputs only on the merchant origin and on those frames.
+
+### Set up the card
+
+Approve a budget on `/crossmint/setup` as described in
+[Set up payments in Bell](#set-up-payments-in-bell). For this path the budget must name the merchant,
+and its Visa Intelligent Commerce or Mastercard Agent Pay rail must be verified. With
+`CROSSMINT_CARD_CHECKOUT=1`, a budget whose rail is still pending shows a Verify card button: Visa
+sends a one-time code and asks for a passkey, and Mastercard opens a hosted page. The page reloads
+once the network confirms, and the rail reads `active`.
+
+See [saving a card](https://docs.crossmint.com/agents/payment-methods/cards/save-card),
+[registering it](https://docs.crossmint.com/agents/payment-methods/cards/register-card), and
+[creating an order intent](https://docs.crossmint.com/agents/payment-methods/cards/create-agent-card).
+
+### Use
+
+At the merchant's payment step Bell calls `crossmint_card_checkout` with the total, the currency,
+the checkout page's URL or host, and exact CSS selectors for the card number, the CVC, and the
+expiry, either as `expiry` (MM/YY) or as `exp_month` (MM) and `exp_year` (YYYY), plus the pay
+button. A target inside an iframe adds a `frame` selector. Billing address inputs are not accepted.
+Bell fills those with its usual tools before the call, because the one-time card carries no
+address.
+
+Eve pauses and shows "Pay 12.49 EUR at shop.example with your Crossmint agent card?". Approving
+runs the tool once. Only the authenticated sender who asked can approve.
+
+The tool answers `submission_attempted`, `merchant_confirmation_observed`, or `outcome_unknown`.
+None of them proves payment. The browser is private after the card is entered, so the person checks
+the order through human handoff. Bell does not retry an uncertain purchase. A refusal answers
+`error` with a reason, such as `merchant_mismatch`, `insufficient_allowance`,
+`rail_pending_verification`, or `cvc_recollection_required`, and says what the person has to do.
+
+### How payment is guarded
+
+`crossmint_card_checkout` is declared with `approval: always()`, so the runtime stops before
+executing it and shows the person the amount, currency, and merchant the model put in the call.
+After approval, and before anything is minted, the server checks:
+
+- `CROSSMINT_ALLOWED_MERCHANTS` and `CROSSMINT_MAX_COST` from the Agent Checkouts settings.
+- The order intent is active and expires more than a minute from now.
+- It names this merchant, by host.
+- Its currency is this payment's currency, and what is left on it covers the amount.
+- Its Visa Intelligent Commerce or Mastercard Agent Pay rail is active for card numbers.
+- On the merchant page, every mapped input and the pay button match exactly once, on the merchant
+  origin or a configured payment frame.
+
+Any difference refuses the payment with its own reason. Only then does the server mint. A mint
+spends its amount at once, even if the card is never used. It carries an idempotency key derived
+from the conversation and the tool call, so a repeat of the same call never issues a second card.
+Crossmint answers `credential_already_issued` instead. The card network enforces the amount and the
+merchant on the one-time card as well.
+
+The card is read inside the fill and never returned. Bell types it into the mapped inputs, presses
+pay once, clears the inputs it can still reach, and marks the browser private. Merchant scripts may
+keep their own copy of what was typed.
+
+The `network-token` format and the `encrypted-card` rail are out of scope here: a network token
+needs a payment processor integration, and the encrypted card returns the real card number. Agent
+Checkouts pays encrypted cards inside Crossmint's vault instead.
+
+### Transcript boundary
+
+The model sees its own tool input, which is the total, currency, merchant, and selectors, the fill
+status, and refusal reasons. The order intent id, the operator token, the client key, Crossmint's
+error messages, and the card are read on the server and never appear in tool arguments or output.
+
+### Verify
+
+`pnpm check` runs mock tests for the card path. They pin the order intent read, the mint request,
+its headers, and its idempotency key to the documented API. They refuse with each pre-mint reason,
+map Crossmint's error codes including the two 409 responses an operator must act on, project the
+card into Bell's field mapping, prove the tool stays off without `CROSSMINT_CARD_CHECKOUT=1`, refuse
+before any mint when the browser lock is not held, answer "do not retry" for any failure after a
+mint, and check that no card value or Crossmint message reaches tool output. The setup tests prove the Verify
+card step appears only with the card path on.
+
+The staging smoke below needs a staging project with Bell's JWKS reachable over HTTPS,
+`CROSSMINT_API_BASE_URL` set to `https://staging.crossmint.com/api/unstable`, and a `ck_staging_`
+client key.
+
+1. Save the [test card](https://docs.crossmint.com/agents/payment-methods/cards/test-agent-cards)
+   `4242 4242 4242 4242` on the setup page, approve a 10.00 USD budget for
+   `https://merchant.invalid`, and verify its Visa rail.
+2. Export a token with `export TOKEN=$(pnpm -s crossmint:operator-jwt)` and the values from
+   `.env.local`, then read the order intent. Expect the `agentic-token` rail `active` and
+   `available` `10.00`:
+
+   ```sh
+   curl -s https://staging.crossmint.com/api/unstable/order-intents/$CROSSMINT_ORDER_INTENT_ID \
+     -H "X-API-KEY: $CROSSMINT_CLIENT_API_KEY" -H "Authorization: Bearer $TOKEN" -H "Origin: $BELL_PUBLIC_URL" \
+     | jq '{status, amount, rails}'
+   ```
+
+3. Mint 1.00 with an idempotency key, printing only metadata. Expect `agentic-token` and `1.00 USD`:
+
+   ```sh
+   curl -s -X POST https://staging.crossmint.com/api/unstable/order-intents/$CROSSMINT_ORDER_INTENT_ID/credentials \
+     -H "X-API-KEY: $CROSSMINT_CLIENT_API_KEY" -H "Authorization: Bearer $TOKEN" -H "Origin: $BELL_PUBLIC_URL" \
+     -H "Content-Type: application/json" -H "Idempotency-Key: bell-smoke-1" \
+     -d '{"rail":"agentic-token","provider":"vic","amount":{"value":"1.00","currency":"USD"},"credential":{"format":"card"}}' \
+     | jq '{rail, provider, amount, expiresAt}'
+   ```
+
+4. Repeat step 3 unchanged. Expect HTTP 409 with `ORDER_INTENT_CREDENTIAL_ALREADY_ISSUED`. Read the
+   order intent again and expect `available` `9.00`, spent once.
+5. Run the opt-in browser fill on the synthetic checkout page, which types a card of the same shape
+   into a local Chrome and checks the safe status, the cleared inputs, and the quarantine:
+
+   ```sh
+   TEST_LINK_BROWSER=1 pnpm vitest run tests/link-checkout-browser.test.ts
+   ```
+
+Never run the smoke against a real merchant or with a production key.
+
+References: [Agent Cards overview](https://docs.crossmint.com/agents/cards/overview),
+[rails and PCI](https://docs.crossmint.com/agents/cards/rails-and-pci),
+[Agent Cards quickstart](https://docs.crossmint.com/agents/cards-quickstart),
+[get order intent](https://docs.crossmint.com/api-reference/agentic-commerce/order-intents/get-order-intent),
+[create credentials](https://docs.crossmint.com/api-reference/agentic-commerce/order-intents/get-order-intent-credentials),
+[verify the selected rail](https://docs.crossmint.com/agents/payment-methods/cards/create-agent-card).

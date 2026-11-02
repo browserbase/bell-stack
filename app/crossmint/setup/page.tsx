@@ -2,6 +2,7 @@ import { routeAuth } from "eve/channels/auth";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { crossmintConfig, CrossmintSetupError, getBuyerProfile, isCrossmintConfigured } from "../../../server/crossmint/client";
+import { isCrossmintCardsConfigured } from "../../../server/crossmint/cards";
 import { CrossmintOperatorError, listOrderIntents, operatorConfig, type OperatorConfig } from "../../../server/crossmint/operator";
 import { operatorAuth } from "../../../server/operator-auth";
 import Setup, { type Check, type SetupProps } from "./setup";
@@ -55,7 +56,8 @@ export default async function CrossmintSetupPage() {
   if (config) {
     try {
       const configured = process.env.CROSSMINT_ORDER_INTENT_ID?.trim();
-      props.budgets = (await listOrderIntents({ config })).map((intent) => budgetView(intent, configured));
+      const cards = isCrossmintCardsConfigured();
+      props.budgets = (await listOrderIntents({ config })).map((intent) => budgetView(intent, configured, undefined, cards));
       props.checks.token = { state: "ok", text: "Crossmint accepts Bell's operator token." };
       props.apiKey = config.clientApiKey;
     } catch (error) {
