@@ -1,8 +1,35 @@
 import { defineTool, toolOutput } from "eve/tools";
 import { z } from "zod";
-import { amount, currency, errorOutput, notConfigured, requestId, runId, WAIT_MS, type CheckoutToolOutput } from "../lib/crossmint";
-import { answerForm, cancelCheckout, createCheckout, declineRequest, getCheckout, waitForCheckout } from "../../server/crossmint/client";
-import { assertSessionCheckout, rememberCheckout } from "../../server/crossmint/runs";
+import {
+  amount,
+  currency,
+  errorOutput,
+  FIRST_UPDATE_MS,
+  MIN_UPDATE_MS,
+  notConfigured,
+  requestId,
+  runId,
+  UPDATE_MS,
+  type CheckoutToolOutput,
+} from "../lib/crossmint";
+import {
+  answerForm,
+  cancelCheckout,
+  createCheckout,
+  declineRequest,
+  getCheckout,
+  waitForCheckout,
+  type CheckoutSnapshot,
+  type WaitOptions,
+} from "../../server/crossmint/client";
+import { assertSessionCheckout, rememberCheckout, type CheckoutRecord } from "../../server/crossmint/runs";
+
+/** Wait for the next step or, while the run works, the next new stage, and remember what was reported. */
+async function nextUpdate(record: CheckoutRecord, options: WaitOptions): Promise<CheckoutSnapshot> {
+  const snapshot = await waitForCheckout(record.runId, { progressSince: record.lastStage ?? null, ...options });
+  if (snapshot.progress) record.lastStage = snapshot.progress.stage;
+  return snapshot;
+}
 
 const inputSchema = z.discriminatedUnion("action", [
   z.object({
@@ -28,7 +55,7 @@ const inputSchema = z.discriminatedUnion("action", [
 
 export default defineTool({
   description:
-    "Buy at any store through Crossmint Agent Checkouts under a hard spending cap. Crossmint picks the fastest path for the store, the merchant API, an agent protocol, or its own checkout browser, so nothing runs in this conversation's browser. The person pays with their own card, worldwide, and the card number never reaches this assistant. Call start with the product URL, a plain-language task, and maxCost, then follow requiredAction. For a form, call answer with one value per field key. For a payment, call crossmint_pay. decline refuses a request and cancel stops the run. Each call returns a status snapshot and waits up to ninety seconds for the next step. A succeeded result with purchase.kind receipt_captured is the only proof of a placed order. Never start a second checkout for the same request while one is unresolved.",
+    "Buy at any store through Crossmint Agent Checkouts under a hard spending cap. Crossmint picks the fastest path for the store, the merchant API, an agent protocol, or its own checkout browser, so nothing runs in this conversation's browser. The person pays with their own card, worldwide, and the card number never reaches this assistant. Call start with the product URL, a plain-language task, and maxCost, then follow requiredAction. For a form, call answer with one value per field key. For a payment, call crossmint_pay. decline refuses a request and cancel stops the run. Each call returns a status snapshot: start returns within about twenty-five seconds, and status waits for the next step or, while the run works, the next progress stage, up to a minute. When the snapshot carries progress, tell the person in one short sentence what Crossmint is doing, then call status again. A succeeded result with purchase.kind receipt_captured is the only proof of a placed order. Never start a second checkout for the same request while one is unresolved.",
   inputSchema,
   label: {
     start: (input) =>
@@ -44,14 +71,14 @@ export default defineTool({
       switch (input.action) {
         case "start": {
           const { runId } = await createCheckout(input, { signal });
-          rememberCheckout(sessionId, { runId, maxCost: input.maxCost, principalId: ctx.session.auth.current?.principalId ?? null });
-          return await waitForCheckout(runId, { signal, timeoutMs: WAIT_MS });
+          const record = { runId, maxCost: input.maxCost, principalId: ctx.session.auth.current?.principalId ?? null };
+          rememberCheckout(sessionId, record);
+          return await nextUpdate(record, { signal, timeoutMs: FIRST_UPDATE_MS });
         }
         case "status":
-          assertSessionCheckout(sessionId, input.runId);
-          return await waitForCheckout(input.runId, { signal, timeoutMs: WAIT_MS });
+          return await nextUpdate(assertSessionCheckout(sessionId, input.runId), { signal, timeoutMs: UPDATE_MS, minProgressMs: MIN_UPDATE_MS });
         case "answer": {
-          assertSessionCheckout(sessionId, input.runId);
+          const record = assertSessionCheckout(sessionId, input.runId);
           const current = await getCheckout(input.runId, { signal });
           const action = current.requiredAction;
           if (!action || action.requestId !== input.requestId) return current;
@@ -67,7 +94,7 @@ export default defineTool({
             };
           }
           await answerForm(input.runId, input.requestId, input.answers, { signal });
-          return await waitForCheckout(input.runId, { signal, timeoutMs: WAIT_MS, skipRequestId: input.requestId });
+          return await nextUpdate(record, { signal, timeoutMs: UPDATE_MS, minProgressMs: MIN_UPDATE_MS, skipRequestId: input.requestId });
         }
         case "decline":
           assertSessionCheckout(sessionId, input.runId);

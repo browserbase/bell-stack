@@ -216,6 +216,17 @@ export interface CheckoutSnapshot {
     purchase?: { kind: string; receipt?: { total?: MaxCost; merchantOrderId?: string } };
   } | null;
   failureReason: string | null;
+  /** While the run works, what Crossmint is doing. Only polls that ask for progress fill it. */
+  progress?: CheckoutProgress;
+}
+
+/**
+ * What a running checkout is doing, for a short update to the person: a fixed phrase chosen from
+ * Crossmint's activity kinds. Crossmint's own progress text is never passed on. It can name the
+ * buyer while the profile is applied, and it is written while reading merchant pages.
+ */
+export interface CheckoutProgress {
+  stage: string;
 }
 
 export interface CrossmintClientOptions {
@@ -423,12 +434,111 @@ export async function cancelCheckout(runId: string, options: CrossmintClientOpti
   await request(`/agent-checkouts/${encodeURIComponent(runId)}/cancel`, { method: "POST" }, options);
 }
 
+/**
+ * Saved name, contact, and shipping address that checkouts use instead of asking. It holds no
+ * payment data. Only the operator setup page reads or writes it; the model never sees it.
+ */
+export interface BuyerProfile {
+  id: string;
+  label?: string;
+  name?: { first: string; last: string };
+  contact?: { email?: string; phone?: string };
+  shipping: { addressLines: string[]; locality: string; countryCode: string; administrativeAreaCode?: string | null; postalCode?: string | null };
+}
+
+export type NewBuyerProfile = Omit<BuyerProfile, "id">;
+
+function projectBuyerProfile(raw: unknown): BuyerProfile {
+  const body = record(raw);
+  const shipping = record(body.shipping);
+  const id = string(body.id);
+  const lines = Array.isArray(shipping.addressLines) ? shipping.addressLines.filter((line): line is string => typeof line === "string") : [];
+  if (!id || !lines.length || !string(shipping.locality) || !string(shipping.countryCode)) throw new CrossmintRequestError("invalid_response");
+  const name = record(body.name);
+  const contact = record(body.contact);
+  return {
+    id,
+    ...present({ label: string(body.label) }),
+    ...(string(name.first) && string(name.last) ? { name: { first: string(name.first)!, last: string(name.last)! } } : {}),
+    ...(string(contact.email) || string(contact.phone) ? { contact: present({ email: string(contact.email), phone: string(contact.phone) }) } : {}),
+    shipping: {
+      addressLines: lines,
+      locality: string(shipping.locality)!,
+      countryCode: string(shipping.countryCode)!,
+      administrativeAreaCode: string(shipping.administrativeAreaCode) ?? null,
+      postalCode: string(shipping.postalCode) ?? null,
+    },
+  };
+}
+
+export async function getBuyerProfile(id: string, options: CrossmintClientOptions = {}): Promise<BuyerProfile> {
+  return projectBuyerProfile(await request(`/agent-checkouts/buyer-profiles/${encodeURIComponent(id)}`, { method: "GET" }, options));
+}
+
+export async function createBuyerProfile(profile: NewBuyerProfile, options: CrossmintClientOptions = {}): Promise<BuyerProfile> {
+  return projectBuyerProfile(await request("/agent-checkouts/buyer-profiles", { method: "POST", body: profile }, options));
+}
+
+/** Activity kinds, most telling first, and the phrase the person sees for them. */
+const STAGES: ReadonlyArray<[readonly string[], string]> = [
+  [["apply_payment"], "Applying the payment"],
+  [["apply_buyer_information"], "Filling in the delivery details"],
+  [["create_checkout"], "Starting the store's checkout"],
+  [["call_webmcp_tool"], "Using the store's checkout tools"],
+  [["lookup_product", "search_catalog"], "Finding the product"],
+  [["navigate", "read_playbook"], "Opening the store"],
+];
+const DEFAULT_STAGE = "Working through the store's checkout";
+
+/** The latest stage in a run's messages, in any order Crossmint returns them. */
+export function projectProgress(messages: unknown[]): CheckoutProgress | undefined {
+  const latest = new Map<string, Json>();
+  for (const raw of messages) {
+    const message = record(raw);
+    const id = string(message.id);
+    if (!id) continue;
+    const previous = latest.get(id);
+    if (!previous || Number(message.revision) >= Number(previous.revision)) latest.set(id, message);
+  }
+  const ordered = [...latest.values()].sort((a, b) => Date.parse(String(a.createdAt)) - Date.parse(String(b.createdAt)));
+  let stage: string | undefined;
+  for (const message of ordered) {
+    if (message.role !== "assistant" || !Array.isArray(message.parts)) continue;
+    for (const part of message.parts.map(record)) {
+      if (part.type !== "activity" || !Array.isArray(part.operations)) continue;
+      const kinds = new Set(part.operations.map((operation) => string(record(operation).kind)).filter(Boolean));
+      stage = STAGES.find(([candidates]) => candidates.some((kind) => kinds.has(kind)))?.[1] ?? DEFAULT_STAGE;
+    }
+  }
+  return stage ? { stage } : undefined;
+}
+
+/** Read the run's messages, at most five pages, and project its latest progress. */
+export async function getCheckoutProgress(runId: string, options: CrossmintClientOptions = {}): Promise<CheckoutProgress | undefined> {
+  const messages: unknown[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 5; page++) {
+    const query = `limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+    const body = record(await request(`/agent-checkouts/${encodeURIComponent(runId)}/messages?${query}`, { method: "GET" }, options));
+    if (Array.isArray(body.data)) messages.push(...body.data);
+    cursor = string(body.nextCursor);
+    if (!cursor) break;
+  }
+  return projectProgress(messages);
+}
+
 export interface WaitOptions extends CrossmintClientOptions {
   /** Stop waiting after this many milliseconds and return the latest snapshot. */
   timeoutMs?: number;
   intervalMs?: number;
   /** A request id already answered. Crossmint can keep showing it briefly. */
   skipRequestId?: string;
+  /**
+   * Report progress while the run works: return early once the stage differs from this one (null
+   * means any stage), but not before `minProgressMs`, so the person gets one update per step.
+   */
+  progressSince?: string | null;
+  minProgressMs?: number;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -448,13 +558,31 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 /** Poll until the checkout needs input or ends, or until the timeout. Always returns a snapshot. */
 export async function waitForCheckout(runId: string, options: WaitOptions = {}): Promise<CheckoutSnapshot> {
   const intervalMs = options.intervalMs ?? 2_000;
-  const deadline = Date.now() + (options.timeoutMs ?? 90_000);
+  const started = Date.now();
+  const deadline = started + (options.timeoutMs ?? 90_000);
+  const watchProgress = options.progressSince !== undefined;
   let snapshot = await getCheckout(runId, options);
+  let progress: CheckoutProgress | undefined;
+  let progressReadAt = 0;
   for (;;) {
     const settled =
       TERMINAL_STATUSES.has(snapshot.status) ||
       (snapshot.status === "awaiting_input" && snapshot.requiredAction !== null && snapshot.requiredAction.requestId !== options.skipRequestId);
-    if (settled || Date.now() >= deadline) return snapshot;
+    if (settled) return snapshot;
+    const working = snapshot.status === "running" || snapshot.status === "queued";
+    if (watchProgress && working && Date.now() - progressReadAt >= intervalMs * 3) {
+      progressReadAt = Date.now();
+      // Progress is a courtesy: it never outlasts the wait, and only a cancellation stops it.
+      const remaining = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+      const signal = options.signal ? AbortSignal.any([options.signal, remaining]) : remaining;
+      progress = await getCheckoutProgress(runId, { ...options, signal }).catch((error: unknown) => {
+        if (options.signal?.aborted) throw error;
+        return progress;
+      });
+      const changed = progress !== undefined && progress.stage !== options.progressSince;
+      if (changed && Date.now() - started >= (options.minProgressMs ?? 0)) return { ...snapshot, progress };
+    }
+    if (Date.now() >= deadline) return watchProgress && working && progress ? { ...snapshot, progress } : snapshot;
     options.signal?.throwIfAborted();
     await sleep(Math.min(intervalMs, Math.max(0, deadline - Date.now())), options.signal);
     const next = await getCheckout(runId, options);

@@ -7,6 +7,8 @@ export interface ApprovedPayment {
   amount: string;
   currency: string;
   merchant: string;
+  /** The store name the approval dialog showed, when the model gave one. */
+  merchantName?: string;
 }
 
 export class PaymentMismatchError extends Error {
@@ -27,7 +29,7 @@ export class PaymentMismatchError extends Error {
   }
 }
 
-function hostOf(value: string): string | undefined {
+export function hostOf(value: string): string | undefined {
   return URL.parse(value.includes("://") ? value : `https://${value}`)?.hostname.toLowerCase();
 }
 
@@ -61,6 +63,11 @@ export function assertPaymentMatches(approved: ApprovedPayment, live: CheckoutSn
   const liveHost = merchant.url ? hostOf(merchant.url) : undefined;
   if (!liveHost || liveHost !== hostOf(approved.merchant)) {
     throw refuse("merchant_mismatch", "The approved merchant differs from the one Crossmint is checking out at.");
+  }
+  // The dialog showed this name to the person, so it must be Crossmint's name, not the model's.
+  const shownName = approved.merchantName?.trim().toLowerCase();
+  if (shownName && shownName !== merchant.name?.trim().toLowerCase()) {
+    throw refuse("merchant_mismatch", "The approved store name differs from the one Crossmint is checking out at.");
   }
   if (record.maxCost.currency !== amount.currency || compareAmounts(amount.value, record.maxCost.amount) > 0) {
     throw refuse("cap_exceeded", `The total exceeds the ${record.maxCost.amount} ${record.maxCost.currency} cap this checkout was started with.`);

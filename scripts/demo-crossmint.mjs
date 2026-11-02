@@ -55,14 +55,41 @@ const { runId } = await call("/agent-checkouts", {
 console.log(`run ${runId}`);
 console.log(`console https://www.crossmint.com/console (Agent Checkouts, search for the run id)`);
 
+// The same fixed stage phrases Bell reports, from the activity kinds in the run's messages.
+const STAGES = [
+  [["apply_payment"], "Applying the payment"],
+  [["apply_buyer_information"], "Filling in the delivery details"],
+  [["create_checkout"], "Starting the store's checkout"],
+  [["call_webmcp_tool"], "Using the store's checkout tools"],
+  [["lookup_product", "search_catalog"], "Finding the product"],
+  [["navigate", "read_playbook"], "Opening the store"],
+];
+async function stage() {
+  const { data = [] } = await call(`/agent-checkouts/${encodeURIComponent(runId)}/messages?limit=100`);
+  const activities = data
+    .filter((message) => message.role === "assistant")
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .flatMap((message) => message.parts ?? [])
+    .filter((part) => part.type === "activity");
+  if (!activities.length) return "";
+  const kinds = new Set((activities.at(-1).operations ?? []).map((operation) => operation.kind));
+  return STAGES.find(([candidates]) => candidates.some((kind) => kinds.has(kind)))?.[1] ?? "Working through the store's checkout";
+}
+
 const deadline = Date.now() + 10 * 60_000;
 let last = "";
+let lastStage = "";
 let run;
 do {
   run = await call(`/agent-checkouts/${encodeURIComponent(runId)}`);
   const line = `${run.status} (revision ${run.revision})${describe(run)}`;
   if (line !== last) console.log(`${new Date().toISOString().slice(11, 19)} ${line}`);
   last = line;
+  if (run.status === "running") {
+    const current = await stage().catch(() => lastStage);
+    if (current && current !== lastStage) console.log(`${new Date().toISOString().slice(11, 19)}   ${current}`);
+    lastStage = current;
+  }
   if (run.status === "awaiting_input" || ["succeeded", "failed", "cancelled", "blocked"].includes(run.status)) break;
   await new Promise((resolve) => setTimeout(resolve, 2_000));
 } while (Date.now() < deadline);

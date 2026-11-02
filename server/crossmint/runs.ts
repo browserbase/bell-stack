@@ -13,6 +13,8 @@ export interface CheckoutRecord {
   maxCost: MaxCost;
   /** Authenticated principal that started the run, when the channel provided one. */
   principalId: string | null;
+  /** The last progress stage reported to the person, so each update says something new. */
+  lastStage?: string;
 }
 
 const runs = new Map<string, Map<string, CheckoutRecord>>();

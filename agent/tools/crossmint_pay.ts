@@ -1,7 +1,7 @@
 import { defineTool, toolOutput } from "eve/tools";
 import { always } from "eve/tools/approval";
 import { z } from "zod";
-import { amount, currency, errorOutput, notConfigured, requestId, runId, WAIT_MS, type CheckoutToolOutput } from "../lib/crossmint";
+import { amount, currency, errorOutput, notConfigured, payee, requestId, requesterOnly, runId, WAIT_MS, type CheckoutToolOutput } from "../lib/crossmint";
 import { CrossmintSetupError, getCheckout, payWithOrderIntent, waitForCheckout } from "../../server/crossmint/client";
 import { assertPaymentMatches, PaymentMismatchError } from "../../server/crossmint/payment";
 import { assertSessionCheckout } from "../../server/crossmint/runs";
@@ -12,6 +12,7 @@ const inputSchema = z.object({
   amount: amount.describe("The exact total Crossmint is asking for, copied from the payment request."),
   currency,
   merchant: z.string().min(1).max(255).describe("The merchant URL or host from the payment request."),
+  merchantName: z.string().min(1).max(120).optional().describe("The merchant's name from the payment request, when it has one."),
 });
 
 type Input = z.infer<typeof inputSchema>;
@@ -20,20 +21,15 @@ type PayOutput = CheckoutToolOutput | { status: "payment_not_configured"; runId:
 
 export default defineTool({
   description:
-    "Pay the open payment request of a Crossmint checkout with the person's own card, through the order intent held on the server. Copy amount, currency, and merchant exactly from the payment request. Eve stops and asks the person to approve this call. The server then compares those three values with the live request and with the cap the run started with, and refuses on any difference. The card number never reaches this assistant. Needs an authenticated sender. Call once per payment request. Use crossmint_checkout decline if the person says no.",
+    "Pay the open payment request of a Crossmint checkout with the person's own card, through the order intent held on the server. Copy amount, currency, and merchant exactly from the payment request, and its merchant name when it has one. Eve stops and asks the person to approve this call. The server then compares those three values with the live request and with the cap the run started with, and refuses on any difference. The card number never reaches this assistant. Needs an authenticated sender. Call once per payment request. Use crossmint_checkout decline if the person says no.",
   inputSchema,
   label: {
-    start: (input: Readonly<Input>) => `Paying ${input.amount} ${input.currency} at ${input.merchant} through Crossmint`,
+    start: (input: Readonly<Input>) => `Paying ${input.amount} ${input.currency} at ${payee(input)} through Crossmint`,
   },
   approval: {
     request: always(),
-    prompt: ({ input }) => `Pay ${input.amount} ${input.currency} to ${input.merchant} with your Crossmint order intent?`,
-    response: ({ request, response }) => {
-      const requester = request.principal;
-      if (!requester) return { status: "rejected", reason: "Payments need an authenticated sender." };
-      const same = response.principal.principalId === requester.principalId && response.principal.authenticator === requester.authenticator;
-      return same ? { status: "allowed" } : { status: "rejected", reason: "Only the person who requested this payment can approve it." };
-    },
+    prompt: ({ input }) => `Pay ${input.amount} ${input.currency} at ${payee(input)} with your saved card?`,
+    response: requesterOnly,
   },
   async execute(input, ctx): Promise<PayOutput> {
     ctx.abortSignal.throwIfAborted();

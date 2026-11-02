@@ -5,16 +5,19 @@ import {
   assertCheckoutPolicy,
   cancelCheckout,
   compareAmounts,
+  createBuyerProfile,
   createCheckout,
   crossmintConfig,
   CrossmintPolicyError,
   CrossmintRequestError,
   CrossmintSetupError,
   declineRequest,
+  getBuyerProfile,
   getCheckout,
   isCrossmintConfigured,
   payWithOrderIntent,
   projectCheckout,
+  projectProgress,
   waitForCheckout,
   type CheckoutSnapshot,
 } from "../server/crossmint/client.js";
@@ -22,6 +25,7 @@ import { assertPaymentMatches, PaymentMismatchError } from "../server/crossmint/
 import { assertSessionCheckout, rememberCheckout, sessionCheckout } from "../server/crossmint/runs.js";
 import checkoutTool from "../agent/tools/crossmint_checkout.js";
 import payTool from "../agent/tools/crossmint_pay.js";
+import { payee } from "../agent/lib/crossmint.js";
 
 const config = {
   apiKey: "sk_unit_test_only",
@@ -448,5 +452,132 @@ describe("Crossmint tools", () => {
       hint: expect.stringContaining("No order intent"),
     });
     expect(fetcher.mock.calls.every((call) => (call as unknown[])[1] === undefined || ((call as unknown[])[1] as RequestInit).method === "GET")).toBe(true);
+  });
+});
+
+describe("Crossmint progress", () => {
+  const activity = (id: string, createdAt: string, kinds: string[], revision = 1) => ({
+    id,
+    revision,
+    role: "assistant",
+    createdAt,
+    parts: [{ type: "activity", status: "running", operations: kinds.map((kind) => ({ kind, count: 1 })) }],
+  });
+  const progressText = (id: string, createdAt: string, text: string) => ({ id, revision: 1, role: "assistant", createdAt, parts: [{ type: "progress", text }] });
+
+  it("maps the latest activity to a fixed stage, in createdAt order and at the latest revision", () => {
+    const messages = [
+      activity("m2", "2026-11-02T12:00:02Z", ["apply_buyer_information", "fill"]),
+      activity("m1", "2026-11-02T12:00:01Z", ["navigate"]),
+      activity("m2", "2026-11-02T12:00:02Z", ["apply_payment"], 2),
+      { id: "u1", revision: 1, role: "user", createdAt: "2026-11-02T12:00:03Z", parts: [{ type: "activity", operations: [{ kind: "navigate" }] }] },
+    ];
+    expect(projectProgress(messages)).toEqual({ stage: "Applying the payment" });
+    expect(projectProgress([activity("m1", "2026-11-02T12:00:01Z", ["click", "scroll"])])).toEqual({ stage: "Working through the store's checkout" });
+    expect(projectProgress([])).toBeUndefined();
+  });
+
+  it("never passes on Crossmint's own progress text, which can name the buyer", () => {
+    const messages = [
+      activity("m1", "2026-11-02T12:00:01Z", ["lookup_product"]),
+      progressText("p1", "2026-11-02T12:00:02Z", "Filling shipping for Ada Lovelace, Calle Mayor 1, 28013 Madrid"),
+    ];
+    expect(projectProgress(messages)).toEqual({ stage: "Finding the product" });
+    expect(projectProgress([progressText("p1", "2026-11-02T12:00:02Z", "Opening the store")])).toBeUndefined();
+  });
+
+  it("returns early with progress once the stage changes, but not before the minimum wait", async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request) =>
+      String(url).includes("/messages")
+        ? Response.json({ data: [activity("m1", "2026-11-02T12:00:01Z", ["apply_buyer_information"])], nextCursor: null })
+        : Response.json(snapshot({ status: "running" })),
+    );
+    const early = await waitForCheckout("run_1", { config, fetch: fetcher, intervalMs: 1, timeoutMs: 1_000, progressSince: null });
+    expect(early).toMatchObject({ status: "running", progress: { stage: "Filling in the delivery details" } });
+    const unchanged = await waitForCheckout("run_1", { config, fetch: fetcher, intervalMs: 1, timeoutMs: 20, progressSince: "Filling in the delivery details" });
+    expect(unchanged.progress).toEqual({ stage: "Filling in the delivery details" });
+    const started = Date.now();
+    await waitForCheckout("run_1", { config, fetch: fetcher, intervalMs: 1, timeoutMs: 1_000, progressSince: "Opening the store", minProgressMs: 60 });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(55);
+  });
+
+  it("rethrows a cancellation that lands during a progress read", async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/messages")) {
+        controller.abort();
+        throw new Error("aborted");
+      }
+      return Response.json(snapshot({ status: "running" }));
+    });
+    await expect(waitForCheckout("run_1", { config, fetch: fetcher, intervalMs: 1, timeoutMs: 1_000, progressSince: null, signal: controller.signal })).rejects.toThrow();
+  });
+
+  it("never lets a failed progress read stop the wait, and never adds progress unless asked", async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request) =>
+      String(url).includes("/messages") ? new Response("nope", { status: 500 }) : Response.json(snapshot({ status: "running" })),
+    );
+    const result = await waitForCheckout("run_1", { config, fetch: fetcher, intervalMs: 1, timeoutMs: 10, progressSince: null });
+    expect(result.status).toBe("running");
+    expect(result.progress).toBeUndefined();
+    const plain = vi.fn(async () => Response.json(snapshot({ status: "running" })));
+    expect((await waitForCheckout("run_1", { config, fetch: plain, intervalMs: 1, timeoutMs: 5 })).progress).toBeUndefined();
+    expect(plain.mock.calls.every((call) => !String((call as unknown[])[0]).includes("/messages"))).toBe(true);
+  });
+});
+
+describe("Crossmint buyer profiles", () => {
+  const profile = {
+    id: "bp_1",
+    label: "Bell",
+    name: { first: "Ada", last: "Lovelace" },
+    contact: { email: "ada@example.com", phone: "+34600000000" },
+    shipping: { addressLines: ["Calle Mayor 1"], locality: "Madrid", countryCode: "ES", administrativeAreaCode: "ES-M", postalCode: "28013" },
+    createdAt: "2026-11-02T12:00:00Z",
+  };
+
+  it("creates and reads a profile with the server key and the operator id", async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ "X-API-KEY": config.apiKey, "x-crossmint-user-id": config.userId });
+      if (init?.method === "POST") {
+        expect(String(url)).toBe("https://www.crossmint.com/api/unstable/agent-checkouts/buyer-profiles");
+        expect(JSON.parse(init.body as string)).toEqual({ label: profile.label, name: profile.name, contact: profile.contact, shipping: profile.shipping });
+      } else {
+        expect(String(url)).toBe("https://www.crossmint.com/api/unstable/agent-checkouts/buyer-profiles/bp_1");
+      }
+      return Response.json(profile);
+    });
+    const input = { label: profile.label, name: profile.name, contact: profile.contact, shipping: profile.shipping };
+    const created = await createBuyerProfile(input, { config, fetch: fetcher });
+    expect(created).toEqual({ id: "bp_1", label: "Bell", name: profile.name, contact: profile.contact, shipping: profile.shipping });
+    await expect(getBuyerProfile("bp_1", { config, fetch: fetcher })).resolves.toEqual(created);
+  });
+
+  it("rejects a profile without a shipping address", async () => {
+    const fetcher = vi.fn(async () => Response.json({ id: "bp_1", shipping: { addressLines: [] } }));
+    await expect(getBuyerProfile("bp_1", { config, fetch: fetcher })).rejects.toThrow(CrossmintRequestError);
+  });
+});
+
+describe("Crossmint payment store name", () => {
+  it("refuses when the store name in the approval is not Crossmint's", () => {
+    const record = { runId: "run_1", maxCost: { amount: "20.00", currency: "USD" }, principalId: "linq:1" };
+    const live = projectCheckout(paymentRequest());
+    const approved = { requestId: "req_pay", amount: "12.49", currency: "USD", merchant: "shop.example" };
+    expect(() => assertPaymentMatches({ ...approved, merchantName: "example shop " }, live, record)).not.toThrow();
+    expect(() => assertPaymentMatches({ ...approved, merchantName: "Zara" }, live, record)).toThrow(PaymentMismatchError);
+    expect(() => assertPaymentMatches({ ...approved, merchantName: "Example Shop: test charge, refunded" }, live, record)).toThrow("store name");
+  });
+});
+
+describe("Crossmint payment approval wording", () => {
+  it("names the payee by store name and host, and never shows ids", () => {
+    expect(payee({ merchant: "https://payments.zara.com/", merchantName: "Zara" })).toBe("Zara (payments.zara.com)");
+    expect(payee({ merchant: "shop.example" })).toBe("shop.example");
+    expect(payee({ merchant: "https://shop.example", merchantName: "shop.example" })).toBe("shop.example");
+    const prompt = (payTool.approval as unknown as { prompt: (ctx: { input: Record<string, string> }) => string }).prompt;
+    expect(prompt({ input: { runId: "run_1", requestId: "req_pay", amount: "16.90", currency: "EUR", merchant: "https://payments.zara.com/", merchantName: "Zara" } })).toBe(
+      "Pay 16.90 EUR at Zara (payments.zara.com) with your saved card?",
+    );
   });
 });
