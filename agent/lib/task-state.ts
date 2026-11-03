@@ -3,8 +3,6 @@ import { defineState } from "eve/context";
 import { captchaTimeoutMs, type CaptchaTransition } from "../../lib/browser/captcha";
 import type { BrowserProxyLocation, BrowserState } from "../../server/browser/types.js";
 
-export { captchaTimeoutMs, type CaptchaTransition };
-
 export type TaskStatus =
   "idle" | "running" | "solving_captcha" | "waiting_for_user" | "complete" | "failed" | "canceled";
 export type CaptchaStatus = "idle" | "solving" | "solved" | "errored" | "timed_out";

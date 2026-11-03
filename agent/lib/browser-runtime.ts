@@ -1,3 +1,4 @@
+import type { CaptchaTransition } from "../../lib/browser/captcha";
 import { personalBrowserEnabled, withPersonalBrowserLock } from "../../server/onepassword/browser-policy";
 import {
   createAgentContext,
@@ -27,6 +28,7 @@ type BrowserOperation<T> = (browser: BrowserSession) => Promise<T>;
 interface BrowserRuntime {
   browser: BrowserSession;
   state: ConversationState;
+  captchaTransitions: CaptchaTransition[];
   idleTimer?: ReturnType<typeof setTimeout>;
   closing?: Promise<void>;
 }
@@ -65,11 +67,14 @@ function getRuntime(sessionId: string): BrowserRuntime {
       title: durable.browser.title,
     },
   };
+  const captchaTransitions: CaptchaTransition[] = [];
   const runtime = {
     state,
+    captchaTransitions,
     browser: createRuntimeBrowser(
       sessionId,
       state,
+      captchaTransitions,
       durable.browser.contextId,
       durable.browser.proxyLocation,
     ),
@@ -92,9 +97,23 @@ async function runBrowserOperationUnlocked<T>(sessionId: string, operation: Brow
   const runtime = getRuntime(sessionId);
   scheduleIdleClose(sessionId, runtime);
   const traceStart = runtime.state.traces.length;
+  let settled = false;
+  const pending = operation(runtime.browser).finally(() => {
+    settled = true;
+  });
+  while (!settled) {
+    await Promise.race([
+      pending.then(
+        () => undefined,
+        () => undefined,
+      ),
+      new Promise((resolve) => setTimeout(resolve, 50)),
+    ]);
+    commitCaptchaQueue(runtime);
+  }
   let result: T;
   try {
-    result = await operation(runtime.browser);
+    result = await pending;
   } catch (error) {
     if (!(error instanceof CaptchaHandoffError)) throw error;
     result = {
@@ -103,6 +122,7 @@ async function runBrowserOperationUnlocked<T>(sessionId: string, operation: Brow
       action: "Complete the challenge in the existing Live View, then resume this task.",
     } as T;
   }
+  commitCaptchaQueue(runtime);
   scheduleIdleClose(sessionId, runtime);
   return {
     result,
@@ -213,6 +233,7 @@ export async function createBrowserContext(
     runtime.browser = createRuntimeBrowser(
       sessionId,
       runtime.state,
+      runtime.captchaTransitions,
       context.id,
       runtime.state.browser.proxyLocation,
     );
@@ -245,6 +266,7 @@ export async function selectBrowserContext(
     runtime.browser = createRuntimeBrowser(
       sessionId,
       runtime.state,
+      runtime.captchaTransitions,
       contextId,
       runtime.state.browser.proxyLocation,
     );
@@ -293,9 +315,20 @@ export async function saveBrowserContext(
   };
 }
 
+function commitCaptchaQueue(runtime: BrowserRuntime): void {
+  if (!runtime.captchaTransitions.length) return;
+  const transitions = runtime.captchaTransitions.splice(0);
+  taskState.update((current) => {
+    let next = current;
+    for (const transition of transitions) next = applyCaptchaTransition(next, transition);
+    return updateTaskBrowser(next, runtime.state.browser);
+  });
+}
+
 function createRuntimeBrowser(
   sessionId: string,
   state: ConversationState,
+  captchaTransitions: CaptchaTransition[],
   contextId?: string,
   proxyLocation?: BrowserProxyLocation,
 ): BrowserSession {
@@ -304,7 +337,7 @@ function createRuntimeBrowser(
     proxyLocation,
     captcha: taskState.get().captcha,
     onCaptchaTransition: (transition) => {
-      taskState.update((current) => updateTaskBrowser(applyCaptchaTransition(current, transition), state.browser));
+      captchaTransitions.push(transition);
     },
     ensureContext: personalBrowserEnabled() ? undefined : async (currentContextId) => {
       const context = await ensureAgentContext(sessionId, currentContextId);

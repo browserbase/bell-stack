@@ -9,15 +9,18 @@ export async function markSecretFill(blocked: boolean): Promise<void> {
   if (blocked) await lock.client.query("INSERT INTO bell_onepassword_browser_guards(session_id) VALUES($1) ON CONFLICT DO NOTHING", [lock.sessionId]);
   else await lock.client.query("DELETE FROM bell_onepassword_browser_guards WHERE session_id=$1", [lock.sessionId]);
 }
+function extensionConfigured(): boolean {
+  return Boolean(process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID?.trim());
+}
 export function personalBrowserEnabled(): boolean {
-  return personalConnectionsEnabled() && Boolean(process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID?.trim());
+  return personalConnectionsEnabled() && extensionConfigured();
 }
 export function requireReusableContexts(): void {
   if (personalBrowserEnabled()) throw new Error("Reusable browser Contexts are disabled for personal 1Password. Start a new private conversation instead.");
 }
 let pool: ReturnType<typeof createPool> | undefined;
 export async function withPersonalBrowserLock<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
-  if (!personalBrowserEnabled()) return operation();
+  if (!extensionConfigured()) return operation();
   if (!process.env.DATABASE_URL) throw new Error("Personal 1Password requires DATABASE_URL.");
   pool ??= createPool(process.env.DATABASE_URL, "Private browser", { allowExitOnIdle: true });
   return withAdvisoryLock(pool, `bell-private-browser:${sessionId}`, async (client) => {

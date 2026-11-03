@@ -35,7 +35,6 @@ interface CaptchaGateHost {
   applyPage(xpathMap: Record<string, string>, url: string, title: string): void;
 }
 
-/** Tracks Browserbase CAPTCHA console events and blocks page work until a solve finishes or hands off. */
 export class CaptchaGate {
   readonly subscriptions = new Map<string, CDPSubscription>();
   private status: "idle" | "solving" | "solved" | "errored" | "timed_out";

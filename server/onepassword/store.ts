@@ -51,7 +51,6 @@ export class OnePasswordStore {
     return (await this.pool.query<{ owner: string }>("SELECT owner FROM bell_onepassword_tickets WHERE hash=$1 AND expires_at>now()", [hash])).rows[0]?.owner;
   }
   async withOwner<T>(owner: string, operation: (db: RecordStore) => Promise<T>): Promise<T> {
-    // The session lock spans committed crash markers around single-use token exchanges.
     return withAdvisoryLock(this.pool, `onepassword:${owner}`, (client) => operation(new RecordStore(client, owner, this.key)));
   }
 }

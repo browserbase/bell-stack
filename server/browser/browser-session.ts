@@ -189,7 +189,7 @@ export class BrowserSession {
         await this.gateCaptcha();
       }
       return result;
-    });
+    }, signal);
   }
 
   async snapshot(): Promise<{
@@ -347,8 +347,10 @@ export class BrowserSession {
       input.totpTarget, input.otpSubmitTarget, input.successTarget];
     if (selectors.some((selector) => selector && (/^\s*(?:xpath=|\/|\()/i.test(selector) || selector.includes(">>"))))
       throw new Error("Secure login requires CSS selectors in the top-level page; frame selectors are not allowed.");
-    return this.withPage(async () => {
+    return this.withLock(async () => {
       try {
+        await this.start();
+        await this.gateCaptcha();
         const started = performance.now();
         const result = await this.requireStagehand().experimentalBatch(
         async ({ page }, values) => {
@@ -530,18 +532,24 @@ export class BrowserSession {
     return this.stagehand;
   }
 
-  private async withPage<T>(operation: () => Promise<T>): Promise<T> {
+  private async withPage<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     return this.withOperation(async () => {
       await this.gateCaptcha();
+      return operation();
+    }, signal);
+  }
+
+  private async withOperation<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.withLock(async () => {
+      signal?.throwIfAborted();
+      await this.start();
       return operation();
     });
   }
 
-  /** Serialize browser work. Cookie import starts the session without the CAPTCHA gate. */
-  private async withOperation<T>(operation: () => Promise<T>): Promise<T> {
+  private async withLock<T>(operation: () => Promise<T>): Promise<T> {
     const release = await this.acquireOperation();
     try {
-      await this.start();
       return await operation();
     } finally {
       release();

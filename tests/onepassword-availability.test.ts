@@ -8,7 +8,7 @@ import status from "../agent/tools/onepassword_status";
 import disconnect from "../agent/tools/onepassword_disconnect";
 import { onePasswordGet, onePasswordPost } from "../server/onepassword/http";
 import { browserbaseLaunchOptions } from "../server/browser/browser-session";
-import { requireReusableContexts } from "../server/onepassword/browser-policy";
+import { requireReusableContexts, withPersonalBrowserLock } from "../server/onepassword/browser-policy";
 
 describe("personal 1Password rollout", () => {
   let ctx: ToolContext;
@@ -63,5 +63,11 @@ describe("personal 1Password rollout", () => {
     vi.stubEnv("ONEPASSWORD_ENABLED", "true");
     expect(browserbaseLaunchOptions("test-key").extensionId).toBe("previous-private-extension");
     expect(requireReusableContexts).toThrow();
+  });
+  it("still checks the private-browser guard when the rollout flag is off", async () => {
+    vi.stubEnv("ONEPASSWORD_ENABLED", "false");
+    vi.stubEnv("BROWSERBASE_1PASSWORD_EXTENSION_ID", "previous-private-extension");
+    vi.stubEnv("DATABASE_URL", "");
+    await expect(withPersonalBrowserLock("conversation", async () => "ran")).rejects.toThrow("DATABASE_URL");
   });
 });

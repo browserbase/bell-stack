@@ -5,7 +5,6 @@ import { personalBrowserEnabled } from "../onepassword/browser-policy";
 import { addTrace } from "./trace";
 import type { BrowserProxyLocation, ConversationState } from "./types";
 
-/** The session fields a hosted launch is allowed to change. */
 export interface HostedBrowserHost {
   readonly state: ConversationState;
   readonly contextId?: string;
@@ -77,10 +76,13 @@ export async function launchHostedBrowser(host: HostedBrowserHost, apiKey: strin
         const prior = await client.sessions.retrieve(persistedSessionId);
         if (prior.userMetadata?.networkLogging !== "false" || prior.userMetadata?.sessionRecording !== "false")
           throw new Error("Session logging and recording settings cannot be verified.");
+        const personalSession =
+          prior.userMetadata?.privateContext === "true" || Boolean(prior.userMetadata?.onepasswordExtension);
         if (
-          personalBrowserEnabled() &&
-          (prior.userMetadata?.onepasswordExtension !== process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID ||
-            prior.userMetadata?.privateContext !== "true")
+          personalBrowserEnabled()
+            ? prior.userMetadata?.onepasswordExtension !== process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID ||
+              prior.userMetadata?.privateContext !== "true"
+            : personalSession
         )
           throw new Error("The personal 1Password browser settings cannot be verified.");
         const browser = await stagehandBrowserbase.connect({
@@ -159,8 +161,7 @@ export async function releaseHostedSession(host: HostedBrowserHost): Promise<voi
   try {
     await client.sessions.update(sessionId, { status: "REQUEST_RELEASE" });
   } catch (error) {
-    // An already removed session is released. Keep the ID on every other
-    // failure so cleanup can retry instead of silently orphaning the browser.
+    // An already removed session is released.
     if (!(error instanceof Browserbase.APIError) || error.status !== 404)
       throw new Error("The hosted browser could not be released. Retry cleanup.");
   }

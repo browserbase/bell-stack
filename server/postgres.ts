@@ -12,7 +12,6 @@ export function createPool(connectionString: string, label: string, options: Poo
   return pool;
 }
 
-/** Hold a session advisory lock. A failed lock or unlock destroys the client instead of returning it to the pool. */
 export async function withAdvisoryLock<T>(pool: Pool, key: string, operation: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   let locked = false;

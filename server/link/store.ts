@@ -103,9 +103,6 @@ export class LinkStore {
   }
 
   async withOwner<T>(owner: LinkOwner, operation: (store: OwnerStore) => Promise<T>): Promise<T> {
-    // A session lock spans independently committed writes around remote OAuth calls.
-    // In-progress markers must survive process failure; a transaction rollback would
-    // otherwise allow a single-use authorization code or refresh token to be retried.
     return withAdvisoryLock(this.pool, ownerKey(owner), (client) => operation(new OwnerStore(client, owner)));
   }
 }

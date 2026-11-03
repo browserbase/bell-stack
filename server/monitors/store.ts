@@ -198,7 +198,7 @@ export class MonitorStore {
 let singleton: MonitorStore | undefined;
 export function monitorStore(): MonitorStore {
   if (!singleton) {
-    singleton = new MonitorStore(createPool(required("DATABASE_URL"), "Monitor", { connectionTimeoutMillis: 3_000, statement_timeout: 5_000 }));
+    singleton = new MonitorStore(createPool(required("DATABASE_URL"), "Monitor", { connectionTimeoutMillis: 3_000, idleTimeoutMillis: 10_000, statement_timeout: 5_000 }));
   }
   return singleton;
 }
