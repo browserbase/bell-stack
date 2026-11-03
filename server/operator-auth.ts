@@ -1,13 +1,14 @@
-import { ForbiddenError, localDev, verifyHttpBasic, withAuthChallenges } from "eve/channels/auth";
+import { ForbiddenError, localDev, verifyHttpBasic, withAuthChallenges, type AuthResult } from "eve/channels/auth";
 
 const developmentAuth = localDev();
 const loopbackHost = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i;
 
-export function localOperatorAuth(request: Request) {
+export async function localOperatorAuth(request: Request) {
   // Checking every host also covers Next's proxy and prevents DNS rebinding.
   const hosts = [new URL(request.url).host, request.headers.get("host"), request.headers.get("x-forwarded-host")];
   if (hosts.some(host => host !== null && !loopbackHost.test(host))) return null;
-  return developmentAuth(request);
+  const auth = await developmentAuth(request);
+  return auth ? operatorIdentity(auth) : null;
 }
 
 function operatorCredentials() {
@@ -26,7 +27,7 @@ export const operatorAuth = withAuthChallenges((request: Request) => {
   const credentials = operatorCredentials();
   if (!credentials) return null;
   const result = verifyHttpBasic(request.headers.get("authorization"), credentials);
-  return result.ok ? result.sessionAuth : null;
+  return result.ok ? operatorIdentity(result.sessionAuth) : null;
 }, [{ scheme: "Basic", parameters: { realm: "Bell", charset: "UTF-8" } }]);
 
 function assertOperatorOrigin(request: Request): void {
@@ -38,4 +39,9 @@ function assertOperatorOrigin(request: Request): void {
   const origin = request.headers.get("origin");
   if (origin !== null ? origin !== expected.origin : request.headers.get("sec-fetch-site") !== "same-origin")
     throw new ForbiddenError({ message: "Same-origin access required." });
+}
+
+// Basic and loopback development access represent the same personal assistant owner.
+function operatorIdentity(auth: AuthResult): AuthResult {
+  return { ...auth, principalType: "user", issuer: "bell:operator", principalId: "operator" };
 }
