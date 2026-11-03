@@ -52,7 +52,10 @@ export class BrowserSession {
       ensureContext?: (
         currentContextId?: string,
       ) => Promise<{ id: string; status: "draft" | "saved" }>;
-      captcha?: { status: "idle" | "solving" | "solved" | "errored" | "timed_out"; startedAt?: string };
+      captcha?: {
+        status: "idle" | "solving" | "solved" | "errored" | "timed_out";
+        startedAt?: string;
+      };
       onCaptchaTransition?: (transition: CaptchaTransition) => void;
     } = {},
   ) {
@@ -100,8 +103,13 @@ export class BrowserSession {
       if (requested === "browserbase") {
         const apiKey = process.env.BROWSERBASE_API_KEY;
         if (!apiKey) throw new Error("BROWSERBASE_API_KEY is required for Browserbase mode.");
-        if (personalBrowserEnabled() && (this.options.contextId || process.env.BROWSERBASE_CONTEXT_ID))
-          throw new Error("Start a new conversation without a reusable Context for personal 1Password.");
+        if (
+          personalBrowserEnabled() &&
+          (this.options.contextId || process.env.BROWSERBASE_CONTEXT_ID)
+        )
+          throw new Error(
+            "Start a new conversation without a reusable Context for personal 1Password.",
+          );
         const currentContextId = this.options.contextId ?? process.env.BROWSERBASE_CONTEXT_ID;
         if (this.options.ensureContext && !personalBrowserEnabled()) {
           const context = await this.options.ensureContext(currentContextId);
@@ -343,56 +351,69 @@ export class BrowserSession {
     host: string;
     url: string;
   }> {
-    const selectors = [input.usernameTarget, input.passwordTarget, input.submitTarget,
-      input.totpTarget, input.otpSubmitTarget, input.successTarget];
-    if (selectors.some((selector) => selector && (/^\s*(?:xpath=|\/|\()/i.test(selector) || selector.includes(">>"))))
-      throw new Error("Secure login requires CSS selectors in the top-level page; frame selectors are not allowed.");
+    const selectors = [
+      input.usernameTarget,
+      input.passwordTarget,
+      input.submitTarget,
+      input.totpTarget,
+      input.otpSubmitTarget,
+      input.successTarget,
+    ];
+    if (
+      selectors.some(
+        (selector) =>
+          selector && (/^\s*(?:xpath=|\/|\()/i.test(selector) || selector.includes(">>")),
+      )
+    )
+      throw new Error(
+        "Secure login requires CSS selectors in the top-level page; frame selectors are not allowed.",
+      );
     return this.withLock(async () => {
       try {
         await this.start();
         await this.gateCaptcha();
         const started = performance.now();
         const result = await this.requireStagehand().experimentalBatch(
-        async ({ page }, values) => {
-          const checkDestination = async () => {
-            const destination = new URL(await page.url());
-            if (
-              destination.protocol !== "https:" ||
-              destination.username ||
-              destination.password ||
-              !values.allowedHosts.includes(destination.hostname.toLowerCase())
-            )
-              throw new Error("Unsafe credential destination.");
-          };
-          await checkDestination();
-          await page.locator(values.usernameTarget).fill(values.username);
-          await checkDestination();
-          await page.locator(values.passwordTarget).fill(values.password);
-          if (values.totpTarget && values.totp && !values.totpAfterSubmit) {
+          async ({ page }, values) => {
+            const checkDestination = async () => {
+              const destination = new URL(await page.url());
+              if (
+                destination.protocol !== "https:" ||
+                destination.username ||
+                destination.password ||
+                !values.allowedHosts.includes(destination.hostname.toLowerCase())
+              )
+                throw new Error("Unsafe credential destination.");
+            };
             await checkDestination();
-            await page.locator(values.totpTarget).fill(values.totp);
-          }
-          await checkDestination();
-          await page.locator(values.submitTarget).click();
-          await page.waitForTimeout(1_000);
-          if (values.totpTarget && values.totp && values.totpAfterSubmit) {
+            await page.locator(values.usernameTarget).fill(values.username);
             await checkDestination();
-            await page.locator(values.totpTarget).fill(values.totp);
-            if (values.otpSubmitTarget) {
+            await page.locator(values.passwordTarget).fill(values.password);
+            if (values.totpTarget && values.totp && !values.totpAfterSubmit) {
               await checkDestination();
-              await page.locator(values.otpSubmitTarget).click();
+              await page.locator(values.totpTarget).fill(values.totp);
             }
+            await checkDestination();
+            await page.locator(values.submitTarget).click();
             await page.waitForTimeout(1_000);
-          }
-          const url = await page.url(),
-            title = await page.title();
-          const success = values.successTarget
-            ? (await page.locator(values.successTarget).count()) > 0
-            : false;
-          return { url, title, success };
-        },
-        input,
-        { timeout: 45_000 },
+            if (values.totpTarget && values.totp && values.totpAfterSubmit) {
+              await checkDestination();
+              await page.locator(values.totpTarget).fill(values.totp);
+              if (values.otpSubmitTarget) {
+                await checkDestination();
+                await page.locator(values.otpSubmitTarget).click();
+              }
+              await page.waitForTimeout(1_000);
+            }
+            const url = await page.url(),
+              title = await page.title();
+            const success = values.successTarget
+              ? (await page.locator(values.successTarget).count()) > 0
+              : false;
+            return { url, title, success };
+          },
+          input,
+          { timeout: 45_000 },
         );
         await this.gateCaptcha();
         this.updateBrowserState(result.url, result.title);

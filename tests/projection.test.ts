@@ -57,23 +57,39 @@ describe("shared browser output in the Bell panel", () => {
     });
   });
   it("clears the previous page's capture and status after a login redirects", () => {
-    expect(browserPreview([
-      event({ url: "https://shop.example/login", httpStatus: 200, screenshot: "data:image/png;base64,aA==" }),
-      event({
-        result: { status: "complete" },
-        workbench: { browser: { url: "https://shop.example/account" } },
-      }),
-    ])).toEqual({
+    expect(
+      browserPreview([
+        event({
+          url: "https://shop.example/login",
+          httpStatus: 200,
+          screenshot: "data:image/png;base64,aA==",
+        }),
+        event({
+          result: { status: "complete" },
+          workbench: { browser: { url: "https://shop.example/account" } },
+        }),
+      ]),
+    ).toEqual({
       url: "https://shop.example/account",
       screenshot: undefined,
       httpStatus: undefined,
     });
   });
   it("keeps a new page's own capture and status when its URL changes", () => {
-    expect(browserPreview([
-      event({ url: "https://shop.example/login", httpStatus: 200, screenshot: "data:image/png;base64,aA==" }),
-      event({ url: "https://shop.example/account", httpStatus: 403, screenshot: "data:image/png;base64,bA==" }),
-    ])).toEqual({
+    expect(
+      browserPreview([
+        event({
+          url: "https://shop.example/login",
+          httpStatus: 200,
+          screenshot: "data:image/png;base64,aA==",
+        }),
+        event({
+          url: "https://shop.example/account",
+          httpStatus: 403,
+          screenshot: "data:image/png;base64,bA==",
+        }),
+      ]),
+    ).toEqual({
       url: "https://shop.example/account",
       screenshot: "data:image/png;base64,bA==",
       httpStatus: 403,

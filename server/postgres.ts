@@ -1,6 +1,10 @@
 import { Pool, type PoolClient, type PoolConfig } from "pg";
 
-export function createPool(connectionString: string, label: string, options: PoolConfig = {}): Pool {
+export function createPool(
+  connectionString: string,
+  label: string,
+  options: PoolConfig = {},
+): Pool {
   const pool = new Pool({
     connectionString,
     max: 5,
@@ -12,7 +16,11 @@ export function createPool(connectionString: string, label: string, options: Poo
   return pool;
 }
 
-export async function withAdvisoryLock<T>(pool: Pool, key: string, operation: (client: PoolClient) => Promise<T>): Promise<T> {
+export async function withAdvisoryLock<T>(
+  pool: Pool,
+  key: string,
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
   const client = await pool.connect();
   let locked = false;
   let destroy = false;

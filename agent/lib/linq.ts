@@ -7,7 +7,9 @@ export const linqBrowserEvents: NonNullable<LinqChannelConfig["events"]> = {
     try {
       await browserChannelEvents["session.failed"](event);
     } finally {
-      await channel.thread?.post("This session could not recover from an error. Start a new conversation to continue.");
+      await channel.thread?.post(
+        "This session could not recover from an error. Start a new conversation to continue.",
+      );
     }
   },
 };

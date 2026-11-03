@@ -29,7 +29,9 @@ function fixture() {
   const page = {
     url: async () => url,
     title: async () => "Test shop",
-    goto: vi.fn(async (next: string) => { url = next; }),
+    goto: vi.fn(async (next: string) => {
+      url = next;
+    }),
     waitForLoadState: vi.fn(async () => {}),
     waitForTimeout: vi.fn(async () => {}),
     locator: (target: string) => ({
@@ -38,18 +40,31 @@ function fixture() {
       count: async () => 1,
     }),
   };
-  const batch = vi.fn(async <T, A>(
-    callback: (context: { page: typeof page }, args: A) => Promise<T>,
-    args: A,
-  ) => callback({ page }, args));
+  const batch = vi.fn(
+    async <T, A>(callback: (context: { page: typeof page }, args: A) => Promise<T>, args: A) =>
+      callback({ page }, args),
+  );
   const start = vi.spyOn(session, "start").mockResolvedValue();
-  vi.spyOn(session as unknown as { gateCaptcha(): Promise<void> }, "gateCaptcha")
-    .mockResolvedValue();
+  vi.spyOn(
+    session as unknown as { gateCaptcha(): Promise<void> },
+    "gateCaptcha",
+  ).mockResolvedValue();
   Object.assign(session, {
     stagehand: { experimentalBatch: batch },
     browserbase: {},
   });
-  return { session, state, start, batch, page, fill, click, setUrl: (next: string) => { url = next; } };
+  return {
+    session,
+    state,
+    start,
+    batch,
+    page,
+    fill,
+    click,
+    setUrl: (next: string) => {
+      url = next;
+    },
+  };
 }
 
 afterEach(() => {
@@ -58,10 +73,18 @@ afterEach(() => {
 });
 
 describe("vault login credential boundary", () => {
-  it.each(["iframe >> #password", "xpath=/html/body/iframe/input", "/html/body/iframe/input", "(//iframe)/input"])(
-    "rejects selectors that could send credentials into another frame: %s", async passwordTarget => {
+  it.each([
+    "iframe >> #password",
+    "xpath=/html/body/iframe/input",
+    "/html/body/iframe/input",
+    "(//iframe)/input",
+  ])(
+    "rejects selectors that could send credentials into another frame: %s",
+    async (passwordTarget) => {
       const { session, start, fill } = fixture();
-      await expect(session.secureLogin({ ...login, passwordTarget })).rejects.toThrow("CSS selectors");
+      await expect(session.secureLogin({ ...login, passwordTarget })).rejects.toThrow(
+        "CSS selectors",
+      );
       expect(start).not.toHaveBeenCalled();
       expect(fill).not.toHaveBeenCalled();
     },
@@ -80,24 +103,32 @@ describe("vault login credential boundary", () => {
 
   it("rechecks the destination before filling the password", async () => {
     const { session, setUrl, fill } = fixture();
-    fill.mockImplementationOnce(async () => { setUrl("https://other.example/login"); });
+    fill.mockImplementationOnce(async () => {
+      setUrl("https://other.example/login");
+    });
     await expect(session.secureLogin(login)).rejects.toThrow("Secure login failed");
     expect(fill.mock.calls).toEqual([[login.usernameTarget, login.username]]);
   });
 
-  it.each([false, true])("rechecks the destination before OTP, afterSubmit=%s", async (afterSubmit) => {
-    const { session, setUrl, fill, click } = fixture();
-    if (afterSubmit) {
-      click.mockImplementationOnce(async () => { setUrl("https://other.example/otp"); });
-    } else {
-      fill.mockImplementation(async (target) => {
-        if (target === login.passwordTarget) setUrl("http://shop.example/otp");
-      });
-    }
-    await expect(session.secureLogin({ ...login, totpAfterSubmit: afterSubmit }))
-      .rejects.toThrow("Secure login failed");
-    expect(fill.mock.calls.some(([, value]) => value === login.totp)).toBe(false);
-  });
+  it.each([false, true])(
+    "rechecks the destination before OTP, afterSubmit=%s",
+    async (afterSubmit) => {
+      const { session, setUrl, fill, click } = fixture();
+      if (afterSubmit) {
+        click.mockImplementationOnce(async () => {
+          setUrl("https://other.example/otp");
+        });
+      } else {
+        fill.mockImplementation(async (target) => {
+          if (target === login.passwordTarget) setUrl("http://shop.example/otp");
+        });
+      }
+      await expect(session.secureLogin({ ...login, totpAfterSubmit: afterSubmit })).rejects.toThrow(
+        "Secure login failed",
+      );
+      expect(fill.mock.calls.some(([, value]) => value === login.totp)).toBe(false);
+    },
+  );
 
   it("allows HTTPS login without exposing secrets in its result or trace", async () => {
     const { session, state, fill } = fixture();
@@ -114,7 +145,9 @@ describe("vault login credential boundary", () => {
     vi.spyOn(session, "start").mockRejectedValue(new Error(login.password));
     await expect(session.secureLogin(login)).rejects.toThrow("Secure login failed");
     expect(JSON.stringify(state)).not.toContain(login.password);
-    expect(state.traces).toContainEqual(expect.objectContaining({ name: "vault.login", kind: "error" }));
+    expect(state.traces).toContainEqual(
+      expect.objectContaining({ name: "vault.login", kind: "error" }),
+    );
   });
 
   it("redacts failures and releases the operation lock for the next attempt", async () => {
@@ -135,17 +168,28 @@ describe("browser navigation boundary", () => {
       expect(fill).toHaveBeenCalledWith(`#field-${i}`, value);
       expect(JSON.stringify(state.traces)).not.toContain(value);
     }
-    expect(state.traces.find(trace => trace.name === "run")?.detail).toMatchObject({
-      actions: values.map((_, i) => ({ action: "fill", target: `#field-${i}`, value: "[value hidden]" })),
+    expect(state.traces.find((trace) => trace.name === "run")?.detail).toMatchObject({
+      actions: values.map((_, i) => ({
+        action: "fill",
+        target: `#field-${i}`,
+        value: "[value hidden]",
+      })),
     });
   });
 
   it("rejects operations queued behind a browser that has been closed", async () => {
     const { session, batch } = fixture();
-    Object.assign(session, { stagehand: { experimentalBatch: batch, close: vi.fn(async () => {}) } });
+    Object.assign(session, {
+      stagehand: { experimentalBatch: batch, close: vi.fn(async () => {}) },
+    });
     let resume!: () => void;
-    const gate = new Promise<void>(resolve => { resume = resolve; });
-    batch.mockImplementationOnce(async () => { await gate; return { url: "https://shop.example", title: "Fixture" }; });
+    const gate = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    batch.mockImplementationOnce(async () => {
+      await gate;
+      return { url: "https://shop.example", title: "Fixture" };
+    });
     const first = session.run([{ action: "fill", target: "#first", value: "one" }]);
     await vi.waitFor(() => expect(batch).toHaveBeenCalledOnce());
     const second = session.run([{ action: "fill", target: "#second", value: "two" }]);
@@ -154,7 +198,9 @@ describe("browser navigation boundary", () => {
     resume();
     await first;
     await rejected;
-    await expect(session.run([{ action: "wait", milliseconds: 1 }])).rejects.toMatchObject({ name: "AbortError" });
+    await expect(session.run([{ action: "wait", milliseconds: 1 }])).rejects.toMatchObject({
+      name: "AbortError",
+    });
     expect(batch).toHaveBeenCalledOnce();
   });
   it.each([
@@ -171,10 +217,12 @@ describe("browser navigation boundary", () => {
 
   it("validates the whole batch before executing an earlier action", async () => {
     const { session, batch } = fixture();
-    await expect(session.run([
-      { action: "goto", url: "https://shop.example/" },
-      { action: "goto", url: "file:///tmp/bell-synthetic-fixture" },
-    ])).rejects.toThrow();
+    await expect(
+      session.run([
+        { action: "goto", url: "https://shop.example/" },
+        { action: "goto", url: "file:///tmp/bell-synthetic-fixture" },
+      ]),
+    ).rejects.toThrow();
     expect(batch).not.toHaveBeenCalled();
   });
 

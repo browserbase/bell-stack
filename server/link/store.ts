@@ -1,7 +1,10 @@
 import { Pool, type PoolClient } from "pg";
 import { createPool, withAdvisoryLock } from "../postgres";
 
-export interface LinkOwner { issuer: string; id: string }
+export interface LinkOwner {
+  issuer: string;
+  id: string;
+}
 export interface Grant {
   generation: number;
   status: "active" | "reconnect" | "disconnecting" | "disconnected";
@@ -25,7 +28,10 @@ export function ownerKey(owner: LinkOwner): string {
 }
 
 export class OwnerStore {
-  constructor(private readonly client: PoolClient, readonly owner: LinkOwner) {}
+  constructor(
+    private readonly client: PoolClient,
+    readonly owner: LinkOwner,
+  ) {}
 
   async grant(): Promise<Grant> {
     await this.client.query(
@@ -59,17 +65,21 @@ export class OwnerStore {
   }
 
   async attempt(id: string): Promise<Attempt | undefined> {
-    return (await this.client.query<Attempt>(
-      "SELECT * FROM bell_link_oauth_attempts WHERE id = $1 AND issuer = $2 AND principal_id = $3",
-      [id, this.owner.issuer, this.owner.id],
-    )).rows[0];
+    return (
+      await this.client.query<Attempt>(
+        "SELECT * FROM bell_link_oauth_attempts WHERE id = $1 AND issuer = $2 AND principal_id = $3",
+        [id, this.owner.issuer, this.owner.id],
+      )
+    ).rows[0];
   }
 
   async attemptForCallback(callbackHash: string): Promise<Attempt | undefined> {
-    return (await this.client.query<Attempt>(
-      "SELECT * FROM bell_link_oauth_attempts WHERE callback_hash = $1 AND issuer = $2 AND principal_id = $3",
-      [callbackHash, this.owner.issuer, this.owner.id],
-    )).rows[0];
+    return (
+      await this.client.query<Attempt>(
+        "SELECT * FROM bell_link_oauth_attempts WHERE callback_hash = $1 AND issuer = $2 AND principal_id = $3",
+        [callbackHash, this.owner.issuer, this.owner.id],
+      )
+    ).rows[0];
   }
 
   async saveAttempt(attempt: Attempt): Promise<void> {
@@ -80,8 +90,18 @@ export class OwnerStore {
        ON CONFLICT (id) DO UPDATE SET result_hash = EXCLUDED.result_hash,
          encrypted_secrets = EXCLUDED.encrypted_secrets, status = EXCLUDED.status
        WHERE bell_link_oauth_attempts.issuer = EXCLUDED.issuer AND bell_link_oauth_attempts.principal_id = EXCLUDED.principal_id`,
-      [attempt.id, this.owner.issuer, this.owner.id, attempt.generation, attempt.state_hash,
-        attempt.callback_hash, attempt.result_hash, attempt.encrypted_secrets, attempt.status, attempt.expires_at],
+      [
+        attempt.id,
+        this.owner.issuer,
+        this.owner.id,
+        attempt.generation,
+        attempt.state_hash,
+        attempt.callback_hash,
+        attempt.result_hash,
+        attempt.encrypted_secrets,
+        attempt.status,
+        attempt.expires_at,
+      ],
     );
   }
 
@@ -97,13 +117,18 @@ export class LinkStore {
   constructor(readonly pool: Pool) {}
 
   async findAttempt(stateHash: string): Promise<Attempt | undefined> {
-    return (await this.pool.query<Attempt>(
-      "SELECT * FROM bell_link_oauth_attempts WHERE state_hash = $1", [stateHash],
-    )).rows[0];
+    return (
+      await this.pool.query<Attempt>(
+        "SELECT * FROM bell_link_oauth_attempts WHERE state_hash = $1",
+        [stateHash],
+      )
+    ).rows[0];
   }
 
   async withOwner<T>(owner: LinkOwner, operation: (store: OwnerStore) => Promise<T>): Promise<T> {
-    return withAdvisoryLock(this.pool, ownerKey(owner), (client) => operation(new OwnerStore(client, owner)));
+    return withAdvisoryLock(this.pool, ownerKey(owner), (client) =>
+      operation(new OwnerStore(client, owner)),
+    );
   }
 }
 
