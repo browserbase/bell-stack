@@ -42,7 +42,7 @@ pnpm dev
 | Linq | iMessage and SMS through a signed webhook and sender allowlist | [Messaging setup](docs/linq.md) |
 | Link by Stripe | Wallet authorization, spend approval, and checkout through Linq | [Sandbox and wallet setup](docs/link.md) |
 | 1Password | Operator credentials and OTP; personal Agentic Autofill is disabled by default | [Operator access](docs/browser-runtime.md#credentials-and-otp) · [Personal access status](docs/onepassword.md) |
-| Baselayer | Verified access to approved merchants using short-lived credentials | [Merchant access](docs/baselayer.md) |
+| Baselayer | Proves a verified person is behind the agent, using short-lived credentials | [Verified identity](docs/baselayer.md) |
 
 
 See the [repository layout and implementation map](docs/repository.md) to extend Bell.
