@@ -3,27 +3,24 @@ import Browserbase from "@browserbasehq/sdk";
 import {
   localBrowser,
   Stagehand,
-  browserbase as stagehandBrowserbase,
-  type CDPSubscription,
   type CookieParam,
   type StagehandBrowser,
   type Page,
 } from "@browserbasehq/stagehand";
 
-import { captchaTimeoutMs, parseBrowserbaseCaptchaEvent, safeCaptchaPage, type CaptchaSignal, type CaptchaTransition } from "../../lib/browser/captcha";
+import { safeCaptchaPage, type CaptchaTransition } from "../../lib/browser/captcha";
+import {
+  browserProvider,
+  launchHostedBrowser,
+  releaseHostedSession,
+  type HostedBrowserHost,
+} from "./browserbase-launch";
+import { CaptchaGate, CaptchaHandoffError } from "./captcha-gate";
 import { addTrace } from "./trace.js";
 import type { BrowserProxyLocation, BrowserState, ConversationState, RunAction } from "./types.js";
 
-export class CaptchaHandoffError extends Error {
-  readonly code = "captcha_handoff";
-  constructor(readonly reason: "errored" | "timed_out") {
-    super(
-      reason === "errored"
-        ? "CAPTCHA solving errored. Continue in Live View, then resume this task."
-        : "CAPTCHA solving timed out. Continue in Live View, then resume this task.",
-    );
-  }
-}
+export { CaptchaHandoffError } from "./captcha-gate";
+export { browserProvider, browserbaseLaunchOptions } from "./browserbase-launch";
 
 export interface BrowserRecoveryReport {
   visitedOrigins: string[];
@@ -45,10 +42,7 @@ export class BrowserSession {
   private readonly visitedOrigins = new Set<string>();
   private readonly blockedOrigins = new Set<string>();
   private readonly liveSourceOrigins = new Set<string>();
-  private readonly captchaSubscriptions = new Map<string, CDPSubscription>();
-  private captchaStatus: "idle" | "solving" | "solved" | "errored" | "timed_out" = "idle";
-  private captchaStartedAt?: string;
-  private captchaNeedsObservation = false;
+  private readonly captchaGate: CaptchaGate;
 
   constructor(
     private readonly state: ConversationState,
@@ -62,14 +56,23 @@ export class BrowserSession {
       onCaptchaTransition?: (transition: CaptchaTransition) => void;
     } = {},
   ) {
-    this.captchaStatus = options.captcha?.status ?? "idle";
-    this.captchaStartedAt = options.captcha?.startedAt;
+    this.captchaGate = new CaptchaGate(
+      {
+        state,
+        browser: () => this.browser,
+        onCaptchaTransition: options.onCaptchaTransition,
+        observePage: () => this.observeCaptchaPage(),
+        applyPage: (xpathMap, url, title) => {
+          this.xpathMap = xpathMap;
+          this.updateBrowserState(url, title);
+        },
+      },
+      options.captcha,
+    );
   }
 
   resumeAfterHumanInput(): void {
-    if (this.captchaStatus !== "errored" && this.captchaStatus !== "timed_out") return;
-    this.captchaStatus = "idle";
-    this.captchaNeedsObservation = true;
+    this.captchaGate.resumeAfterHumanInput();
   }
 
   async start(): Promise<void> {
@@ -108,7 +111,7 @@ export class BrowserSession {
           this.options.contextId = currentContextId;
           contextStatus = "saved";
         }
-        await this.startBrowserbase(apiKey);
+        await launchHostedBrowser(this.hostedBrowser(), apiKey);
       } else {
         this.browser = await localBrowser.launch({
           headless: process.env.BELL_HEADLESS !== "false",
@@ -127,7 +130,7 @@ export class BrowserSession {
         proxyLocation: requested === "browserbase" ? this.options.proxyLocation : undefined,
         sessionId: this.remoteSessionId,
       };
-      await this.ensureCaptchaSubscriptions();
+      await this.captchaGate.ensureSubscriptions();
       if (requested === "browserbase" && contextStatus) {
         addTrace(
           this.state,
@@ -458,14 +461,14 @@ export class BrowserSession {
   async close(): Promise<void> {
     this.closeRequested = true;
     await this.startPromise?.catch(() => undefined);
-    await this.clearCaptchaSubscriptions();
+    await this.captchaGate.clearSubscriptions();
     const stagehand = this.stagehand;
     const browser = this.browser;
     this.stagehand = undefined;
     this.browser = undefined;
     await stagehand?.close().catch(() => undefined);
     await browser?.close().catch(() => undefined);
-    await this.releaseRemoteSession();
+    await releaseHostedSession(this.hostedBrowser());
     if (this.state.browser.status !== "error") this.state.browser.status = "idle";
   }
 
@@ -560,238 +563,83 @@ export class BrowserSession {
     return release;
   }
 
-  private async startBrowserbase(apiKey: string): Promise<void> {
-    this.browserbase = new Browserbase({ apiKey });
-    const persistedSessionId = this.loadPersistedSessionId();
-
-    if (persistedSessionId) {
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
-        try {
-          const prior = await this.browserbase.sessions.retrieve(persistedSessionId);
-          if (prior.userMetadata?.networkLogging !== "false" || prior.userMetadata?.sessionRecording !== "false")
-            throw new Error("Session logging and recording settings cannot be verified.");
-          if (personalBrowserEnabled() && (prior.userMetadata?.onepasswordExtension !== process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID || prior.userMetadata?.privateContext !== "true"))
-            throw new Error("The personal 1Password browser settings cannot be verified.");
-          const browser = await stagehandBrowserbase.connect({
-            apiKey,
-            sessionId: persistedSessionId,
-          });
-          await this.attachStagehand(browser);
-          this.remoteSessionId = persistedSessionId;
-          addTrace(
-            this.state,
-            "browser",
-            "browser.reattach",
-            "Reattached Stagehand v4 to the saved Browserbase session.",
-            { sessionId: persistedSessionId, attempt },
-          );
-          return;
-        } catch {
-          await this.stagehand?.close().catch(() => undefined);
-          await this.browser?.close().catch(() => undefined);
-          this.stagehand = undefined;
-          this.browser = undefined;
-          if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500));
-        }
-      }
-
-      this.remoteSessionId = persistedSessionId;
-      await this.releaseRemoteSession();
-      addTrace(
-        this.state,
-        "system",
-        "browser.replace",
-        "The saved Browserbase session expired. Bell is starting a replacement with the same Context.",
-        {
-          contextPreserved: Boolean(this.options.contextId ?? process.env.BROWSERBASE_CONTEXT_ID),
-        },
-      );
-    }
-
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      let launched: StagehandBrowser | undefined;
-      try {
-        launched = await stagehandBrowserbase.launch(
-          browserbaseLaunchOptions(apiKey, this.options.contextId, this.options.proxyLocation),
-        );
-        await this.attachStagehand(launched);
-        if (!launched.sessionId)
-          throw new Error("Stagehand did not return a Browserbase session ID.");
-        this.remoteSessionId = launched.sessionId;
-        this.persistSessionId(launched.sessionId);
-        return;
-      } catch (error) {
-        lastError = error;
-        await this.stagehand?.close().catch(() => undefined);
-        await launched?.close().catch(() => undefined);
-        this.stagehand = undefined;
-        this.browser = undefined;
-        if (launched?.sessionId) {
-          this.remoteSessionId = launched.sessionId;
-          await this.releaseRemoteSession();
-        }
-        if (attempt < 3) {
-          addTrace(
-            this.state,
-            "system",
-            "browser.start.retry",
-            `The Browserbase connection failed. Bell will retry with a new verified, proxied session (${attempt}/3).`,
-            { attempt, proxies: true, verified: true },
-          );
-          await new Promise((resolve) => setTimeout(resolve, attempt * 500));
-        }
-      }
-    }
-
-    throw lastError instanceof Error ? lastError : new Error(String(lastError));
-  }
-
   private async attachStagehand(browser: StagehandBrowser): Promise<void> {
     try {
       const stagehand = await Stagehand.create({
         browser,
         logging: { level: "off" },
       });
-      await this.clearCaptchaSubscriptions();
+      await this.captchaGate.clearSubscriptions();
       this.browser = browser;
       this.stagehand = stagehand;
-      await this.ensureCaptchaSubscriptions();
+      await this.captchaGate.ensureSubscriptions();
     } catch (error) {
       await browser.close().catch(() => undefined);
       throw error;
     }
   }
 
-  private emitCaptcha(type: CaptchaTransition["type"], at: string): void {
-    this.options.onCaptchaTransition?.({
-      id: crypto.randomUUID(),
-      type,
-      at,
-      page: safeCaptchaPage(this.state.browser.url),
-    });
-  }
-
-  private async ensureCaptchaSubscriptions(): Promise<void> {
-    if (!this.browser) return;
-    for (const page of await this.browser.context.pages()) {
-      if (this.captchaSubscriptions.has(page.pageId)) continue;
-      const subscription = await page.on("console", (event) => {
-        const signal = parseBrowserbaseCaptchaEvent(event);
-        if (signal) this.recordCaptchaSignal(signal);
-      });
-      this.captchaSubscriptions.set(page.pageId, subscription);
-    }
-  }
-
-  private recordCaptchaSignal(signal: CaptchaSignal): void {
-    const at = new Date().toISOString();
-    const page = safeCaptchaPage(this.state.browser.url);
-    if (signal === "started") {
-      if (this.captchaStatus === "solving") return;
-      this.captchaStatus = "solving";
-      this.captchaStartedAt = at;
-      this.emitCaptcha("started", at);
-      addTrace(this.state, "browser", "captcha.started", "Browserbase is solving a CAPTCHA.", page);
-    } else if (signal === "finished" && this.captchaStatus === "solving") {
-      this.captchaStatus = "solved";
-      this.captchaNeedsObservation = true;
-      this.emitCaptcha("finished", at);
-      addTrace(this.state, "browser", "captcha.finished", "Browserbase solved the CAPTCHA.", page);
-    } else if (signal === "errored" && this.captchaStatus === "solving") {
-      this.captchaStatus = "errored";
-      this.emitCaptcha("errored", at);
-      addTrace(
-        this.state,
-        "error",
-        "captcha.errored",
-        "Browserbase CAPTCHA solving errored; human input is required.",
-        page,
-      );
-    }
-  }
-
   private async gateCaptcha(): Promise<void> {
-    await this.ensureCaptchaSubscriptions();
-    if (this.captchaStatus === "solving") {
-      const started = Date.parse(this.captchaStartedAt ?? new Date().toISOString());
-      while (
-        this.captchaStatus === "solving" &&
-        Date.now() - started < captchaTimeoutMs()
-      )
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      if (this.captchaStatus === "solving") {
-        const at = new Date().toISOString();
-        this.captchaStatus = "timed_out";
-        const page = safeCaptchaPage(this.state.browser.url);
-        this.emitCaptcha("timed_out", at);
-        addTrace(
-          this.state,
-          "error",
-          "captcha.timed_out",
-          "CAPTCHA solving timed out; human input is required.",
-          page,
-        );
-      }
-    }
-    if (this.captchaStatus === "errored" || this.captchaStatus === "timed_out")
-      throw new CaptchaHandoffError(this.captchaStatus);
-    if (this.captchaNeedsObservation) {
-      this.captchaNeedsObservation = false;
-      const result = await this.requireStagehand().experimentalBatch(async ({ page }) => ({
-        snapshot: await page.snapshot({ includeIframes: true }),
-        url: await page.url(),
-        title: await page.title(),
-      }));
-      this.xpathMap = result.snapshot.xpathMap;
-      this.updateBrowserState(result.url, result.title);
-      addTrace(
-        this.state,
-        "browser",
-        "captcha.observed",
-        `Read the post-CAPTCHA page after the current gate.`,
-        {
-          page: safeCaptchaPage(result.url),
-          treePreview: result.snapshot.formattedTree.slice(0, 800),
-        },
-      );
-    }
+    await this.captchaGate.gate();
   }
 
-  private async clearCaptchaSubscriptions(): Promise<void> {
-    const subscriptions = [...this.captchaSubscriptions.values()];
-    this.captchaSubscriptions.clear();
-    await Promise.all(
-      subscriptions.map((subscription) => subscription.unsubscribe().catch(() => undefined)),
-    );
+  private observeCaptchaPage() {
+    return this.requireStagehand().experimentalBatch(async ({ page }) => ({
+      snapshot: await page.snapshot({ includeIframes: true }),
+      url: await page.url(),
+      title: await page.title(),
+    }));
   }
 
-  private async releaseRemoteSession(): Promise<void> {
-    const sessionId = this.remoteSessionId ?? this.loadPersistedSessionId();
-    if (!sessionId) return;
-    this.browserbase ??= new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
-    try {
-      await this.browserbase.sessions.update(sessionId, { status: "REQUEST_RELEASE" });
-    } catch (error) {
-      // An already removed session is released. Keep the ID on every other
-      // failure so cleanup can retry instead of silently orphaning the browser.
-      if (!(error instanceof Browserbase.APIError) || error.status !== 404)
-        throw new Error("The hosted browser could not be released. Retry cleanup.");
-    }
-    this.remoteSessionId = undefined;
-    this.clearPersistedSessionId();
+  private hostedBrowser(): HostedBrowserHost {
+    const readBrowserbase = () => this.browserbase;
+    const writeBrowserbase = (client: Browserbase | undefined) => {
+      this.browserbase = client;
+    };
+    const readRemoteSessionId = () => this.remoteSessionId;
+    const writeRemoteSessionId = (sessionId: string | undefined) => {
+      this.remoteSessionId = sessionId;
+    };
+    const readContextId = () => this.options.contextId;
+    const readProxyLocation = () => this.options.proxyLocation;
+    return {
+      state: this.state,
+      get contextId() {
+        return readContextId();
+      },
+      get proxyLocation() {
+        return readProxyLocation();
+      },
+      get browserbase() {
+        return readBrowserbase();
+      },
+      set browserbase(client) {
+        writeBrowserbase(client);
+      },
+      get remoteSessionId() {
+        return readRemoteSessionId();
+      },
+      set remoteSessionId(sessionId) {
+        writeRemoteSessionId(sessionId);
+      },
+      attach: (browser) => this.attachStagehand(browser),
+      discardAttached: () => this.discardAttached(),
+      discardLaunch: (browser) => this.discardLaunch(browser),
+    };
   }
 
-  private loadPersistedSessionId(): string | undefined {
-    return this.state.browser.sessionId;
+  private async discardAttached(): Promise<void> {
+    await this.stagehand?.close().catch(() => undefined);
+    await this.browser?.close().catch(() => undefined);
+    this.stagehand = undefined;
+    this.browser = undefined;
   }
 
-  private persistSessionId(sessionId: string): void {
-    this.state.browser.sessionId = sessionId;
-  }
-
-  private clearPersistedSessionId(): void {
-    delete this.state.browser.sessionId;
+  private async discardLaunch(browser: StagehandBrowser | undefined): Promise<void> {
+    await this.stagehand?.close().catch(() => undefined);
+    await browser?.close().catch(() => undefined);
+    this.stagehand = undefined;
+    this.browser = undefined;
   }
 
   private updateBrowserState(url: string, title: string): BrowserState {
@@ -848,50 +696,6 @@ function safeActivityUrl(value: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-export function browserProvider(): "local" | "browserbase" {
-  if (process.env.STAGEHAND_BROWSER === "local") return "local";
-  if (process.env.STAGEHAND_BROWSER === "browserbase") return "browserbase";
-  return process.env.BROWSERBASE_API_KEY ? "browserbase" : "local";
-}
-
-export function browserbaseLaunchOptions(
-  apiKey: string,
-  durableContextId?: string,
-  proxyLocation?: BrowserProxyLocation,
-) {
-  const contextId = durableContextId ?? process.env.BROWSERBASE_CONTEXT_ID;
-  const projectId = process.env.BROWSERBASE_PROJECT_ID;
-  if (personalBrowserEnabled() && contextId) throw new Error("Personal 1Password cannot use a reusable Context.");
-  return {
-    apiKey,
-    ...(personalBrowserEnabled() ? { extensionId: process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID!.trim() } : {}),
-    ...(projectId ? { projectId } : {}),
-    proxies: proxyLocation
-      ? [
-          {
-            type: "browserbase" as const,
-            geolocation: proxyLocation,
-          },
-        ]
-      : true,
-    keepAlive: true,
-    browserSettings: {
-      verified: true,
-      logSession: false,
-      recordSession: false,
-      solveCaptchas: true,
-      ...(contextId ? { context: { id: contextId, persist: true } } : {}),
-    },
-    userMetadata: {
-      product: "bell",
-      transport: "stagehand-v4-eve",
-      networkLogging: "false",
-      sessionRecording: "false",
-      ...(personalBrowserEnabled() ? { onepasswordExtension: process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID!.trim(), privateContext: "true" } : {}),
-    },
-  };
 }
 
 export function assessSnapshot(tree: string, url: string): { blocked: boolean; signal?: string } {

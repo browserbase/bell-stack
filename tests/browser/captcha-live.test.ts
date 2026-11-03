@@ -49,8 +49,8 @@ describe("opt-in hosted CAPTCHA marker fixture", () => {
           await session.close();
         }
         expect(
-          (session as unknown as { captchaSubscriptions: Map<string, unknown> })
-            .captchaSubscriptions.size,
+          (session as unknown as { captchaGate: { subscriptions: Map<string, unknown> } })
+            .captchaGate.subscriptions.size,
         ).toBe(0);
       }
     },
