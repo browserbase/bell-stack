@@ -10,16 +10,10 @@ import {
   type Page,
 } from "@browserbasehq/stagehand";
 
-import { parseBrowserbaseCaptchaEvent, safeCaptchaPage, type CaptchaSignal } from "../../lib/browser/captcha";
+import { captchaTimeoutMs, parseBrowserbaseCaptchaEvent, safeCaptchaPage, type CaptchaSignal, type CaptchaTransition } from "../../lib/browser/captcha";
 import { addTrace } from "./trace.js";
 import type { BrowserProxyLocation, BrowserState, ConversationState, RunAction } from "./types.js";
 
-export interface BrowserCaptchaTransition {
-  id: string;
-  type: "started" | "finished" | "errored" | "timed_out";
-  at: string;
-  page?: { origin: string; path: string };
-}
 export class CaptchaHandoffError extends Error {
   readonly code = "captcha_handoff";
   constructor(readonly reason: "errored" | "timed_out") {
@@ -52,7 +46,6 @@ export class BrowserSession {
   private readonly blockedOrigins = new Set<string>();
   private readonly liveSourceOrigins = new Set<string>();
   private readonly captchaSubscriptions = new Map<string, CDPSubscription>();
-  private readonly captchaTransitions: BrowserCaptchaTransition[] = [];
   private captchaStatus: "idle" | "solving" | "solved" | "errored" | "timed_out" = "idle";
   private captchaStartedAt?: string;
   private captchaNeedsObservation = false;
@@ -66,6 +59,7 @@ export class BrowserSession {
         currentContextId?: string,
       ) => Promise<{ id: string; status: "draft" | "saved" }>;
       captcha?: { status: "idle" | "solving" | "solved" | "errored" | "timed_out"; startedAt?: string };
+      onCaptchaTransition?: (transition: CaptchaTransition) => void;
     } = {},
   ) {
     this.captchaStatus = options.captcha?.status ?? "idle";
@@ -678,11 +672,13 @@ export class BrowserSession {
     }
   }
 
-  drainCaptchaTransitions(): BrowserCaptchaTransition[] {
-    const page = safeCaptchaPage(this.state.browser.url);
-    return this.captchaTransitions
-      .splice(0)
-      .map((event) => (event.page ? event : { ...event, page }));
+  private emitCaptcha(type: CaptchaTransition["type"], at: string): void {
+    this.options.onCaptchaTransition?.({
+      id: crypto.randomUUID(),
+      type,
+      at,
+      page: safeCaptchaPage(this.state.browser.url),
+    });
   }
 
   private async ensureCaptchaSubscriptions(): Promise<void> {
@@ -704,31 +700,16 @@ export class BrowserSession {
       if (this.captchaStatus === "solving") return;
       this.captchaStatus = "solving";
       this.captchaStartedAt = at;
-      this.captchaTransitions.push({
-        id: crypto.randomUUID(),
-        type: "started",
-        at,
-        page,
-      });
+      this.emitCaptcha("started", at);
       addTrace(this.state, "browser", "captcha.started", "Browserbase is solving a CAPTCHA.", page);
     } else if (signal === "finished" && this.captchaStatus === "solving") {
       this.captchaStatus = "solved";
       this.captchaNeedsObservation = true;
-      this.captchaTransitions.push({
-        id: crypto.randomUUID(),
-        type: "finished",
-        at,
-        page,
-      });
+      this.emitCaptcha("finished", at);
       addTrace(this.state, "browser", "captcha.finished", "Browserbase solved the CAPTCHA.", page);
     } else if (signal === "errored" && this.captchaStatus === "solving") {
       this.captchaStatus = "errored";
-      this.captchaTransitions.push({
-        id: crypto.randomUUID(),
-        type: "errored",
-        at,
-        page,
-      });
+      this.emitCaptcha("errored", at);
       addTrace(
         this.state,
         "error",
@@ -745,19 +726,14 @@ export class BrowserSession {
       const started = Date.parse(this.captchaStartedAt ?? new Date().toISOString());
       while (
         this.captchaStatus === "solving" &&
-        Date.now() - started < configuredCaptchaTimeoutMs()
+        Date.now() - started < captchaTimeoutMs()
       )
         await new Promise((resolve) => setTimeout(resolve, 25));
       if (this.captchaStatus === "solving") {
         const at = new Date().toISOString();
         this.captchaStatus = "timed_out";
         const page = safeCaptchaPage(this.state.browser.url);
-        this.captchaTransitions.push({
-          id: crypto.randomUUID(),
-          type: "timed_out",
-          at,
-          page,
-        });
+        this.emitCaptcha("timed_out", at);
         addTrace(
           this.state,
           "error",
@@ -877,11 +853,6 @@ function safeActivityUrl(value: string): string {
   } catch {
     return value;
   }
-}
-
-function configuredCaptchaTimeoutMs(): number {
-  const value = Number(process.env.BELL_CAPTCHA_TIMEOUT_MS ?? 30_000);
-  return Number.isFinite(value) && value > 0 ? value : 30_000;
 }
 
 function errorMessage(error: unknown): string {

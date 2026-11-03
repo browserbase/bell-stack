@@ -92,23 +92,9 @@ async function runBrowserOperationUnlocked<T>(sessionId: string, operation: Brow
   const runtime = getRuntime(sessionId);
   scheduleIdleClose(sessionId, runtime);
   const traceStart = runtime.state.traces.length;
-  let settled = false;
-  const pending = operation(runtime.browser).finally(() => {
-    settled = true;
-  });
-  while (!settled) {
-    await Promise.race([
-      pending.then(
-        () => undefined,
-        () => undefined,
-      ),
-      new Promise((resolve) => setTimeout(resolve, 50)),
-    ]);
-    commitCaptchaQueue(runtime);
-  }
   let result: T;
   try {
-    result = await pending;
+    result = await operation(runtime.browser);
   } catch (error) {
     if (!(error instanceof CaptchaHandoffError)) throw error;
     result = {
@@ -117,7 +103,6 @@ async function runBrowserOperationUnlocked<T>(sessionId: string, operation: Brow
       action: "Complete the challenge in the existing Live View, then resume this task.",
     } as T;
   }
-  commitCaptchaQueue(runtime);
   scheduleIdleClose(sessionId, runtime);
   return {
     result,
@@ -132,16 +117,6 @@ async function runBrowserOperationUnlocked<T>(sessionId: string, operation: Brow
         : {}),
     },
   };
-}
-
-function commitCaptchaQueue(runtime: BrowserRuntime): void {
-  const transitions = runtime.browser.drainCaptchaTransitions();
-  if (!transitions.length) return;
-  taskState.update((current) => {
-    let next = current;
-    for (const transition of transitions) next = applyCaptchaTransition(next, transition);
-    return updateTaskBrowser(next, runtime.state.browser);
-  });
 }
 
 export async function saveBrowserRuntime(sessionId: string): Promise<void> {
@@ -328,6 +303,9 @@ function createRuntimeBrowser(
     contextId,
     proxyLocation,
     captcha: taskState.get().captcha,
+    onCaptchaTransition: (transition) => {
+      taskState.update((current) => updateTaskBrowser(applyCaptchaTransition(current, transition), state.browser));
+    },
     ensureContext: personalBrowserEnabled() ? undefined : async (currentContextId) => {
       const context = await ensureAgentContext(sessionId, currentContextId);
       state.browser.contextId = context.id;
