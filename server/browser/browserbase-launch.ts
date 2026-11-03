@@ -12,8 +12,8 @@ export interface HostedBrowserHost {
   browserbase?: Browserbase;
   remoteSessionId?: string;
   attach(browser: StagehandBrowser): Promise<void>;
-  discardAttached(): Promise<void>;
-  discardLaunch(browser: StagehandBrowser | undefined): Promise<void>;
+  /** Close Stagehand and the given browser (the attached one by default) and clear both. */
+  discard(browser?: StagehandBrowser): Promise<void>;
 }
 
 export function browserProvider(): "local" | "browserbase" {
@@ -100,7 +100,7 @@ export async function launchHostedBrowser(host: HostedBrowserHost, apiKey: strin
         );
         return;
       } catch {
-        await host.discardAttached();
+        await host.discard();
         if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500));
       }
     }
@@ -132,7 +132,7 @@ export async function launchHostedBrowser(host: HostedBrowserHost, apiKey: strin
       return;
     } catch (error) {
       lastError = error;
-      await host.discardLaunch(launched);
+      await host.discard(launched);
       if (launched?.sessionId) {
         host.remoteSessionId = launched.sessionId;
         await releaseHostedSession(host);

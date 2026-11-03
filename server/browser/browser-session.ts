@@ -631,19 +631,11 @@ export class BrowserSession {
         writeRemoteSessionId(sessionId);
       },
       attach: (browser) => this.attachStagehand(browser),
-      discardAttached: () => this.discardAttached(),
-      discardLaunch: (browser) => this.discardLaunch(browser),
+      discard: (browser) => this.discard(browser),
     };
   }
 
-  private async discardAttached(): Promise<void> {
-    await this.stagehand?.close().catch(() => undefined);
-    await this.browser?.close().catch(() => undefined);
-    this.stagehand = undefined;
-    this.browser = undefined;
-  }
-
-  private async discardLaunch(browser: StagehandBrowser | undefined): Promise<void> {
+  private async discard(browser = this.browser): Promise<void> {
     await this.stagehand?.close().catch(() => undefined);
     await browser?.close().catch(() => undefined);
     this.stagehand = undefined;

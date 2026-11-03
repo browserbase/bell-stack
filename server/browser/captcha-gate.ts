@@ -86,7 +86,7 @@ export class CaptchaGate {
         const at = new Date().toISOString();
         this.status = "timed_out";
         const page = safeCaptchaPage(this.host.state.browser.url);
-        this.emit("timed_out", at);
+        this.emit("timed_out", at, page);
         addTrace(
           this.host.state,
           "error",
@@ -115,13 +115,8 @@ export class CaptchaGate {
     }
   }
 
-  private emit(type: CaptchaTransition["type"], at: string): void {
-    this.host.onCaptchaTransition?.({
-      id: crypto.randomUUID(),
-      type,
-      at,
-      page: safeCaptchaPage(this.host.state.browser.url),
-    });
+  private emit(type: CaptchaTransition["type"], at: string, page: CaptchaTransition["page"]): void {
+    this.host.onCaptchaTransition?.({ id: crypto.randomUUID(), type, at, page });
   }
 
   private recordSignal(signal: CaptchaSignal): void {
@@ -131,16 +126,16 @@ export class CaptchaGate {
       if (this.status === "solving") return;
       this.status = "solving";
       this.startedAt = at;
-      this.emit("started", at);
+      this.emit("started", at, page);
       addTrace(this.host.state, "browser", "captcha.started", "Browserbase is solving a CAPTCHA.", page);
     } else if (signal === "finished" && this.status === "solving") {
       this.status = "solved";
       this.needsObservation = true;
-      this.emit("finished", at);
+      this.emit("finished", at, page);
       addTrace(this.host.state, "browser", "captcha.finished", "Browserbase solved the CAPTCHA.", page);
     } else if (signal === "errored" && this.status === "solving") {
       this.status = "errored";
-      this.emit("errored", at);
+      this.emit("errored", at, page);
       addTrace(
         this.host.state,
         "error",
