@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
+import { createPool } from "../postgres";
 import { z } from "zod";
 import { type Destination, type Owner, required } from "./config";
 
@@ -154,9 +155,7 @@ export class MonitorStore {
 let singleton: MonitorStore | undefined;
 export function monitorStore(): MonitorStore {
   if (!singleton) {
-    const pool = new Pool({ connectionString: required("DATABASE_URL"), max: 5, connectionTimeoutMillis: 3_000, statement_timeout: 5_000 });
-    pool.on("error", () => console.error("Monitor database connection failed."));
-    singleton = new MonitorStore(pool);
+    singleton = new MonitorStore(createPool(required("DATABASE_URL"), "Monitor", { connectionTimeoutMillis: 3_000, statement_timeout: 5_000 }));
   }
   return singleton;
 }
