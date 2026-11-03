@@ -127,12 +127,24 @@ export class CaptchaGate {
       this.status = "solving";
       this.startedAt = at;
       this.emit("started", at, page);
-      addTrace(this.host.state, "browser", "captcha.started", "Browserbase is solving a CAPTCHA.", page);
+      addTrace(
+        this.host.state,
+        "browser",
+        "captcha.started",
+        "Browserbase is solving a CAPTCHA.",
+        page,
+      );
     } else if (signal === "finished" && this.status === "solving") {
       this.status = "solved";
       this.needsObservation = true;
       this.emit("finished", at, page);
-      addTrace(this.host.state, "browser", "captcha.finished", "Browserbase solved the CAPTCHA.", page);
+      addTrace(
+        this.host.state,
+        "browser",
+        "captcha.finished",
+        "Browserbase solved the CAPTCHA.",
+        page,
+      );
     } else if (signal === "errored" && this.status === "solving") {
       this.status = "errored";
       this.emit("errored", at, page);

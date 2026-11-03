@@ -52,8 +52,13 @@ describe("shared hosted-page integration boundary", () => {
   });
   it("does not observe the page or run post-CAPTCHA snapshots after a private operation", async () => {
     const { session, state, page } = fixture();
-    const title = vi.spyOn(page, "title"), url = vi.spyOn(page, "url");
-    await session.withHostedPage(new AbortController().signal, async () => ({ submitted: true }), true);
+    const title = vi.spyOn(page, "title"),
+      url = vi.spyOn(page, "url");
+    await session.withHostedPage(
+      new AbortController().signal,
+      async () => ({ submitted: true }),
+      true,
+    );
     expect(title).not.toHaveBeenCalled();
     expect(url).not.toHaveBeenCalled();
     expect((session as unknown as { gateCaptcha: unknown }).gateCaptcha).toHaveBeenCalledTimes(1);
@@ -108,26 +113,32 @@ describe("shared hosted-page integration boundary", () => {
     expect(options.userMetadata.sessionRecording).toBe("false");
   });
 
-  it.each([undefined, { country: "US" }])("keeps Verified and managed proxies enabled with location %j", (location) => {
-    const options = browserbaseLaunchOptions("test-key", "test-context", location);
-    expect(options.browserSettings).toMatchObject({
-      verified: true,
-      context: { id: "test-context", persist: true },
-    });
-    expect(options.keepAlive).toBe(true);
-    expect(options.proxies).toEqual(location
-      ? [{ type: "browserbase", geolocation: location }]
-      : true);
-  });
+  it.each([undefined, { country: "US" }])(
+    "keeps Verified and managed proxies enabled with location %j",
+    (location) => {
+      const options = browserbaseLaunchOptions("test-key", "test-context", location);
+      expect(options.browserSettings).toMatchObject({
+        verified: true,
+        context: { id: "test-context", persist: true },
+      });
+      expect(options.keepAlive).toBe(true);
+      expect(options.proxies).toEqual(
+        location ? [{ type: "browserbase", geolocation: location }] : true,
+      );
+    },
+  );
 
   it("retries hosted failures with Verified enabled and never falls back to local Chrome", async () => {
     vi.useFakeTimers();
     vi.stubEnv("STAGEHAND_BROWSER", "browserbase");
     vi.stubEnv("BROWSERBASE_API_KEY", "test-key");
-    const launch = vi.spyOn(browserbase, "launch").mockRejectedValue(new Error("Synthetic launch failure"));
+    const launch = vi
+      .spyOn(browserbase, "launch")
+      .mockRejectedValue(new Error("Synthetic launch failure"));
     const localLaunch = vi.spyOn(localBrowser, "launch");
     const state: ConversationState = {
-      id: "verified-retry-test", traces: [],
+      id: "verified-retry-test",
+      traces: [],
       browser: { provider: "not-started", status: "idle" },
     };
     const session = new BrowserSession(state);

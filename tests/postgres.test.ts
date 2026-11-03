@@ -9,7 +9,10 @@ function client(queries: Array<(sql: string) => unknown> = []) {
     return { rows: [], rowCount: 0 };
   });
   const release = vi.fn();
-  return { query, release } as unknown as PoolClient & { query: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn> };
+  return { query, release } as unknown as PoolClient & {
+    query: ReturnType<typeof vi.fn>;
+    release: ReturnType<typeof vi.fn>;
+  };
 }
 
 function poolFor(connection: PoolClient): Pool {
@@ -33,9 +36,13 @@ describe("advisory lock", () => {
   it("destroys the client when the lock is never acquired", async () => {
     const connection = client([
       () => ({ rows: [] }),
-      () => { throw new Error("lock failed"); },
+      () => {
+        throw new Error("lock failed");
+      },
     ]);
-    await expect(withAdvisoryLock(poolFor(connection), "owner", async () => "done")).rejects.toThrow("lock failed");
+    await expect(
+      withAdvisoryLock(poolFor(connection), "owner", async () => "done"),
+    ).rejects.toThrow("lock failed");
     expect(connection.release).toHaveBeenCalledWith(true);
     expect(connection.query.mock.calls.map((call) => call[0])).toEqual([
       "SET statement_timeout = '30s'",
@@ -47,9 +54,13 @@ describe("advisory lock", () => {
     const connection = client([
       () => ({ rows: [] }),
       () => ({ rows: [] }),
-      () => { throw new Error("unlock failed"); },
+      () => {
+        throw new Error("unlock failed");
+      },
     ]);
-    await expect(withAdvisoryLock(poolFor(connection), "owner", async () => "done")).resolves.toBe("done");
+    await expect(withAdvisoryLock(poolFor(connection), "owner", async () => "done")).resolves.toBe(
+      "done",
+    );
     expect(connection.release).toHaveBeenCalledWith(true);
   });
 });

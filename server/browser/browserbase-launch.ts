@@ -1,5 +1,8 @@
 import Browserbase from "@browserbasehq/sdk";
-import { browserbase as stagehandBrowserbase, type StagehandBrowser } from "@browserbasehq/stagehand";
+import {
+  browserbase as stagehandBrowserbase,
+  type StagehandBrowser,
+} from "@browserbasehq/stagehand";
 
 import { personalBrowserEnabled } from "../onepassword/browser-policy";
 import { addTrace } from "./trace";
@@ -29,10 +32,13 @@ export function browserbaseLaunchOptions(
 ) {
   const contextId = durableContextId ?? process.env.BROWSERBASE_CONTEXT_ID;
   const projectId = process.env.BROWSERBASE_PROJECT_ID;
-  if (personalBrowserEnabled() && contextId) throw new Error("Personal 1Password cannot use a reusable Context.");
+  if (personalBrowserEnabled() && contextId)
+    throw new Error("Personal 1Password cannot use a reusable Context.");
   return {
     apiKey,
-    ...(personalBrowserEnabled() ? { extensionId: process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID!.trim() } : {}),
+    ...(personalBrowserEnabled()
+      ? { extensionId: process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID!.trim() }
+      : {}),
     ...(projectId ? { projectId } : {}),
     proxies: proxyLocation
       ? [
@@ -74,13 +80,18 @@ export async function launchHostedBrowser(host: HostedBrowserHost, apiKey: strin
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         const prior = await client.sessions.retrieve(persistedSessionId);
-        if (prior.userMetadata?.networkLogging !== "false" || prior.userMetadata?.sessionRecording !== "false")
+        if (
+          prior.userMetadata?.networkLogging !== "false" ||
+          prior.userMetadata?.sessionRecording !== "false"
+        )
           throw new Error("Session logging and recording settings cannot be verified.");
         const personalSession =
-          prior.userMetadata?.privateContext === "true" || Boolean(prior.userMetadata?.onepasswordExtension);
+          prior.userMetadata?.privateContext === "true" ||
+          Boolean(prior.userMetadata?.onepasswordExtension);
         if (
           personalBrowserEnabled()
-            ? prior.userMetadata?.onepasswordExtension !== process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID ||
+            ? prior.userMetadata?.onepasswordExtension !==
+                process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID ||
               prior.userMetadata?.privateContext !== "true"
             : personalSession
         )
@@ -126,7 +137,8 @@ export async function launchHostedBrowser(host: HostedBrowserHost, apiKey: strin
         browserbaseLaunchOptions(apiKey, host.contextId, host.proxyLocation),
       );
       await host.attach(launched);
-      if (!launched.sessionId) throw new Error("Stagehand did not return a Browserbase session ID.");
+      if (!launched.sessionId)
+        throw new Error("Stagehand did not return a Browserbase session ID.");
       host.remoteSessionId = launched.sessionId;
       host.state.browser.sessionId = launched.sessionId;
       return;

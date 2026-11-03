@@ -64,11 +64,7 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
             Bell<span>.</span>
           </h1>
         </div>
-        <button
-          className="new-chat"
-          disabled={waiting}
-          onClick={() => void newConversation()}
-        >
+        <button className="new-chat" disabled={waiting} onClick={() => void newConversation()}>
           New conversation
         </button>
       </header>
