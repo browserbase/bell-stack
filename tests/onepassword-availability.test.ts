@@ -52,12 +52,16 @@ describe("personal 1Password rollout", () => {
     expect(response.status).toBe(200);
     expect(capture).toHaveBeenCalledOnce();
   });
-  it("preserves ordinary browsing and private-context protections", () => {
+  it("keeps ordinary browsing until the rollout flag and extension id are both set", () => {
     const options = browserbaseLaunchOptions("test-key");
     expect(options.extensionId).toBeUndefined();
     expect(options.browserSettings).toMatchObject({ logSession: false, recordSession: false });
     expect(requireReusableContexts).not.toThrow();
     vi.stubEnv("BROWSERBASE_1PASSWORD_EXTENSION_ID", "previous-private-extension");
+    expect(browserbaseLaunchOptions("test-key").extensionId).toBeUndefined();
+    expect(requireReusableContexts).not.toThrow();
+    vi.stubEnv("ONEPASSWORD_ENABLED", "true");
+    expect(browserbaseLaunchOptions("test-key").extensionId).toBe("previous-private-extension");
     expect(requireReusableContexts).toThrow();
   });
 });

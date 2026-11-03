@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Pool, type PoolClient } from "pg";
+import { personalConnectionsEnabled } from "./config";
 const activeLock = new AsyncLocalStorage<{ client: PoolClient; sessionId: string }>();
 export async function markSecretFill(blocked: boolean): Promise<void> {
   const lock = activeLock.getStore();
@@ -7,7 +8,9 @@ export async function markSecretFill(blocked: boolean): Promise<void> {
   if (blocked) await lock.client.query("INSERT INTO bell_onepassword_browser_guards(session_id) VALUES($1) ON CONFLICT DO NOTHING", [lock.sessionId]);
   else await lock.client.query("DELETE FROM bell_onepassword_browser_guards WHERE session_id=$1", [lock.sessionId]);
 }
-export function personalBrowserEnabled(): boolean { return Boolean(process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID?.trim()); }
+export function personalBrowserEnabled(): boolean {
+  return personalConnectionsEnabled() && Boolean(process.env.BROWSERBASE_1PASSWORD_EXTENSION_ID?.trim());
+}
 export function requireReusableContexts(): void {
   if (personalBrowserEnabled()) throw new Error("Reusable browser Contexts are disabled for personal 1Password. Start a new private conversation instead.");
 }
