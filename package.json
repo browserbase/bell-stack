@@ -18,7 +18,9 @@
     "repro:stagehand-extensions": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/repro-stagehand-extensions.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
-    "check": "pnpm test && pnpm typecheck && pnpm lint && pnpm build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "pnpm test && pnpm typecheck && pnpm lint && pnpm format:check && pnpm build",
     "baselayer:mint": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/mint-baselayer-credential.mjs",
     "test:retirement:live": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/test-session-retirement.mjs"
   },
@@ -45,6 +47,7 @@
     "@types/react-dom": "19.3.0",
     "eslint": "9.39.5",
     "eslint-config-next": "16.4.3",
+    "prettier": "3.9.10",
     "typescript": "6.0.3",
     "vitest": "4.1.12"
   },

@@ -1,0 +1,9 @@
+pnpm-lock.yaml
+*.md
+.next/
+.eve/
+.output/
+.vercel/
+coverage/
+dist/
+next-env.d.ts
