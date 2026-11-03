@@ -7,6 +7,7 @@ const inboundMessage = z.object({
   direction: z.literal("inbound"),
   chat: z.object({
     is_group: z.literal(false),
+    id: z.string().min(1).max(256),
     owner_handle: z.object({ handle: phoneNumber }),
   }),
   sender_handle: z.object({ handle: phoneNumber, is_me: z.literal(false) }),
@@ -37,8 +38,10 @@ export default linqChannel({
   turnPolicy: "steer",
   onMessage(_context, message) {
     if (!isAllowedBellMessage(message)) return null;
+    const auth = defaultLinqAuth(message);
+    const incoming = inboundMessage.parse(message.raw);
     return {
-      auth: defaultLinqAuth(message),
+      auth: { ...auth, attributes: { ...auth.attributes, bell_watch_chat: incoming.chat.id, bell_watch_sender: incoming.sender_handle.handle, bell_watch_line: incoming.chat.owner_handle.handle } },
       context: [
         "This request arrived through Bell's private Linq iMessage or SMS channel. "
         + "Reply concisely in this chat. Use the same browser for follow-up requests. "

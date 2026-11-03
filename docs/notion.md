@@ -27,7 +27,7 @@ with direct OAuth and supports Notion Free.
 2. From the repository root, with `DATABASE_URL` exported in your shell, apply the migration:
 
    ```sh
-   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/004_notion.sql
+   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/006_notion.sql
    ```
 
    Apply before connecting Notion. It is safe to rerun. PostgreSQL stores encrypted OAuth

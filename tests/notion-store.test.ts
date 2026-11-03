@@ -30,7 +30,7 @@ describe.skipIf(!databaseUrl)("Notion PostgreSQL storage", () => {
     admin = new Pool({ connectionString: databaseUrl });
     await admin.query(`CREATE SCHEMA ${schema}`);
     pool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schema}`, max: 5 });
-    await pool.query(await readFile(new URL("../migrations/004_notion.sql", import.meta.url), "utf8"));
+    await pool.query(await readFile(new URL("../migrations/006_notion.sql", import.meta.url), "utf8"));
     store = new NotionStore(pool, key);
   });
   afterAll(async () => {
