@@ -171,11 +171,8 @@ export class BrowserSession {
     privateResult = false,
   ): Promise<T> {
     signal.throwIfAborted();
-    const release = await this.acquireOperation();
-    try {
+    return this.withPage(async () => {
       signal.throwIfAborted();
-      await this.start();
-      await this.gateCaptcha();
       if (!this.browserbase || !this.remoteSessionId || !this.browser)
         throw new Error("This integration requires a hosted Browserbase session.");
       const page =
@@ -189,9 +186,7 @@ export class BrowserSession {
         await this.gateCaptcha();
       }
       return result;
-    } finally {
-      release();
-    }
+    });
   }
 
   async snapshot(): Promise<{
@@ -201,10 +196,7 @@ export class BrowserSession {
     pageStatus: "live" | "blocked";
     recovery: BrowserRecoveryReport;
   }> {
-    const release = await this.acquireOperation();
-    try {
-      await this.start();
-      await this.gateCaptcha();
+    return this.withPage(async () => {
       const started = performance.now();
       const result = await this.requireStagehand().experimentalBatch(async ({ page }) => {
         const snapshot = await page.snapshot({ includeIframes: true });
@@ -256,9 +248,7 @@ export class BrowserSession {
         pageStatus: assessment.blocked ? "blocked" : "live",
         recovery: this.recoveryReport(),
       };
-    } finally {
-      release();
-    }
+    });
   }
 
   async run(actions: RunAction[]): Promise<{ completed: number; url: string }> {
@@ -272,10 +262,7 @@ export class BrowserSession {
       )
         throw new Error("Browser navigation requires an HTTP(S) URL without embedded credentials.");
     }
-    const release = await this.acquireOperation();
-    try {
-      await this.start();
-      await this.gateCaptcha();
+    return this.withPage(async () => {
       const started = performance.now();
       const resolvedActions = actions.map((item) =>
         "target" in item && item.target
@@ -333,9 +320,7 @@ export class BrowserSession {
         formatRunCode(resolvedActions),
       );
       return { completed: actions.length, url };
-    } finally {
-      release();
-    }
+    });
   }
 
   async secureLogin(input: {
@@ -359,12 +344,10 @@ export class BrowserSession {
       input.totpTarget, input.otpSubmitTarget, input.successTarget];
     if (selectors.some((selector) => selector && (/^\s*(?:xpath=|\/|\()/i.test(selector) || selector.includes(">>"))))
       throw new Error("Secure login requires CSS selectors in the top-level page; frame selectors are not allowed.");
-    const release = await this.acquireOperation();
-    try {
-      await this.start();
-      await this.gateCaptcha();
-      const started = performance.now();
-      const result = await this.requireStagehand().experimentalBatch(
+    return this.withPage(async () => {
+      try {
+        const started = performance.now();
+        const result = await this.requireStagehand().experimentalBatch(
         async ({ page }, values) => {
           const checkDestination = async () => {
             const destination = new URL(await page.url());
@@ -405,43 +388,42 @@ export class BrowserSession {
         },
         input,
         { timeout: 45_000 },
-      );
-      await this.gateCaptcha();
-      this.updateBrowserState(result.url, result.title);
-      const host = new URL(result.url).hostname;
-      const status =
-        input.totpTarget && !input.totp
-          ? "waiting_for_user"
-          : result.success
-            ? "complete"
-            : "unverified";
-      addTrace(
-        this.state,
-        "tool",
-        "vault.login",
-        status === "complete"
-          ? `Verified login state on ${host}.`
-          : status === "waiting_for_user"
-            ? `Login on ${host} is waiting for a human challenge.`
-            : `Filled the login on ${host}, but success is not verified yet.`,
-        { host, status, secretValuesRedacted: true },
-        Math.round(performance.now() - started),
-      );
-      return { status, host, url: result.url };
-    } catch (error) {
-      if (error instanceof CaptchaHandoffError) throw error;
-      addTrace(
-        this.state,
-        "error",
-        "vault.login",
-        "The secure login attempt failed. Secret values were redacted.",
-      );
-      throw new Error(
-        "Secure login failed. Inspect the current page and field selectors, then retry.",
-      );
-    } finally {
-      release();
-    }
+        );
+        await this.gateCaptcha();
+        this.updateBrowserState(result.url, result.title);
+        const host = new URL(result.url).hostname;
+        const status =
+          input.totpTarget && !input.totp
+            ? "waiting_for_user"
+            : result.success
+              ? "complete"
+              : "unverified";
+        addTrace(
+          this.state,
+          "tool",
+          "vault.login",
+          status === "complete"
+            ? `Verified login state on ${host}.`
+            : status === "waiting_for_user"
+              ? `Login on ${host} is waiting for a human challenge.`
+              : `Filled the login on ${host}, but success is not verified yet.`,
+          { host, status, secretValuesRedacted: true },
+          Math.round(performance.now() - started),
+        );
+        return { status, host, url: result.url };
+      } catch (error) {
+        if (error instanceof CaptchaHandoffError) throw error;
+        addTrace(
+          this.state,
+          "error",
+          "vault.login",
+          "The secure login attempt failed. Secret values were redacted.",
+        );
+        throw new Error(
+          "Secure login failed. Inspect the current page and field selectors, then retry.",
+        );
+      }
+    });
   }
 
   async screenshot(): Promise<{
@@ -449,10 +431,7 @@ export class BrowserSession {
     data: string;
     url: string;
   }> {
-    const release = await this.acquireOperation();
-    try {
-      await this.start();
-      await this.gateCaptcha();
+    return this.withPage(async () => {
       const started = performance.now();
       const result = await this.requireStagehand().experimentalBatch(async ({ page }) => ({
         data: await page.screenshot({ type: "png" }),
@@ -473,9 +452,7 @@ export class BrowserSession {
         Math.round(performance.now() - started),
       );
       return { mediaType: "image/png", data: buffer.toString("base64"), url };
-    } finally {
-      release();
-    }
+    });
   }
 
   async close(): Promise<void> {
@@ -503,9 +480,7 @@ export class BrowserSession {
   }
 
   async importCookies(cookies: CookieParam[], url?: string): Promise<void> {
-    const release = await this.acquireOperation();
-    try {
-      await this.start();
+    return this.withOperation(async () => {
       if (cookies.length) await this.browser!.context.addCookies(cookies);
       if (url) {
         const page =
@@ -526,9 +501,7 @@ export class BrowserSession {
           url: url ? safeCaptchaPage(url) : undefined,
         },
       );
-    } finally {
-      release();
-    }
+    });
   }
 
   recoveryReport(): BrowserRecoveryReport {
@@ -552,6 +525,24 @@ export class BrowserSession {
   private requireStagehand(): Stagehand {
     if (!this.stagehand) throw new Error("The Stagehand client is not ready.");
     return this.stagehand;
+  }
+
+  private async withPage<T>(operation: () => Promise<T>): Promise<T> {
+    return this.withOperation(async () => {
+      await this.gateCaptcha();
+      return operation();
+    });
+  }
+
+  /** Serialize browser work. Cookie import starts the session without the CAPTCHA gate. */
+  private async withOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const release = await this.acquireOperation();
+    try {
+      await this.start();
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   private async acquireOperation(): Promise<() => void> {
