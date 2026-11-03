@@ -460,6 +460,34 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     expect((await pool.query("SELECT 1 FROM bell_monitor_jobs WHERE id=$1", [`sync:${watch.id}`])).rowCount).toBe(0);
     expect((await listed())[0].last_scan_at).not.toBeNull();
   });
+  it.each(["malformed record", "resume limit"])("recovers after a saved scan fails on its %s", async failure => {
+    const watch = await create();
+    let clock = Date.now(), repaired = false;
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const lastPage = failure === "malformed record" ? 3 : 63;
+    provider.events = vi.fn(async (_id, _group, cursor) => {
+      clock += repaired && failure === "malformed record" ? 1 : 7_000;
+      const page = Number(cursor ?? 0);
+      const events: unknown[] = [{ event_type: "completion", timestamp: new Date(Date.UTC(2026, 9, 30) - page * 3_600_000).toISOString() }];
+      if (failure === "malformed record" && !page) events.push(repaired ? detected : { event_type: "completion", timestamp: "invalid" });
+      if (failure === "resume limit" && page === lastPage) events.push(detected);
+      return { events, next_cursor: page < lastPage ? String(page + 1) : null };
+    });
+    let failed = false;
+    for (let run = 0; run < 28; run++) {
+      await service.process();
+      failed = (await pool.query("SELECT failed FROM bell_monitor_jobs WHERE id=$1", [`sync:${watch.id}`])).rows[0]?.failed === true;
+      if (failed) break;
+      await pool.query("UPDATE bell_monitor_jobs SET next_at=now() WHERE id=$1", [`sync:${watch.id}`]);
+    }
+    expect(failed).toBe(true);
+    repaired = true;
+    await pool.query("UPDATE bell_monitors SET next_scan_at=now() WHERE id=$1", [watch.id]);
+    for (let run = 0; run < 3; run++) await new MonitorService(new MonitorStore(pool), provider, send).process();
+    expect((await pool.query("SELECT 1 FROM bell_monitor_jobs WHERE id=$1", [`sync:${watch.id}`])).rowCount).toBe(0);
+    expect((await store.get(watch.id)).last_scan_at).not.toBeNull();
+    expect(send).toHaveBeenCalledOnce();
+  });
   it("keeps an active watch reachable behind newer cancelled watches and pages the rest", async () => {
     const active = await create();
     for (let index = 0; index < 50; index++) {
@@ -481,6 +509,17 @@ describe.skipIf(!databaseUrl)("Persistent Parallel watches", () => {
     expect(closed.next_cursor).toBeNull();
     await expect(service.list(owner, { cursor: "not-a-cursor" })).rejects.toThrow("page cursor");
     await expect(service.list(owner, { status: "retired" })).rejects.toThrow();
+  });
+  it.each(["2026-10-31T12:00:00.123000Z", "2026-10-31T12:00:00.123456Z"])("pages every watch sharing timestamp %s", async timestamp => {
+    await pool.query(`INSERT INTO bell_monitors(id,issuer,owner_id,operation,query,destination,status,created_at)
+      SELECT gen_random_uuid(),$1,$2,'page-'||i,'Public releases',$3,'active',$4::timestamptz FROM generate_series(1,51) i`, [owner.issuer, owner.id, destination, timestamp]);
+    const first = await service.list(owner);
+    expect(first.watches).toHaveLength(50);
+    expect(first.next_cursor).not.toBeNull();
+    const second = await service.list(owner, { cursor: first.next_cursor! });
+    expect(second.watches).toHaveLength(1);
+    expect(second.next_cursor).toBeNull();
+    expect(new Set([...first.watches, ...second.watches].map(w => w.id)).size).toBe(51);
   });
   it("keeps valid citations when another URL is unsafe", async () => {
     await create();

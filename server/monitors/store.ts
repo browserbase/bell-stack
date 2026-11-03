@@ -111,9 +111,9 @@ export class MonitorStore {
   }
   async list(owner: Owner, filter: WatchFilter = "all", cursor?: string): Promise<{ watches: ListedWatch[]; next_cursor: string | null }> {
     const from = cursor ? decodeCursor(cursor) : undefined;
-    const rows = (await this.pool.query<ListedWatch & { rank: number }>(`WITH scoped AS (
+    const rows = (await this.pool.query<ListedWatch & { rank: number; cursor_created_at: string }>(`WITH scoped AS (
         SELECT w.*, (CASE WHEN w.status IN (${closedStatuses}) THEN 1 ELSE 0 END) AS rank FROM bell_monitors w WHERE issuer=$1 AND owner_id=$2)
-      SELECT w.*, COALESCE((SELECT jsonb_agg(e.payload) FROM (SELECT payload FROM bell_monitor_events WHERE watch_id=w.id ORDER BY received_at DESC LIMIT 5) e),'[]') AS updates,
+      SELECT w.*, to_char(w.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_created_at, COALESCE((SELECT jsonb_agg(e.payload) FROM (SELECT payload FROM bell_monitor_events WHERE watch_id=w.id ORDER BY received_at DESC LIMIT 5) e),'[]') AS updates,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',kind,'error',last_error,'failed',failed)) FROM bell_monitor_jobs WHERE watch_id=w.id AND last_error IS NOT NULL),'[]') AS problems
       FROM scoped w WHERE ($3::int IS NULL OR w.rank=$3)
         AND ($4::int IS NULL OR w.rank>$4 OR (w.rank=$4 AND (w.created_at<$5::timestamptz OR (w.created_at=$5::timestamptz AND w.id<$6::uuid))))
@@ -121,7 +121,7 @@ export class MonitorStore {
       [owner.issuer, owner.id, filter === "all" ? null : filter === "closed" ? 1 : 0, from?.rank ?? null, from?.created_at ?? null, from?.id ?? null])).rows;
     const watches = rows.slice(0, watchPageSize);
     const last = rows.length > watchPageSize ? watches[watches.length - 1] : undefined;
-    return { watches, next_cursor: last ? encodeCursor({ rank: last.rank, created_at: last.created_at.toISOString(), id: last.id }) : null };
+    return { watches, next_cursor: last ? encodeCursor({ rank: last.rank, created_at: last.cursor_created_at, id: last.id }) : null };
   }
   async claim(): Promise<Job | undefined> {
     return (await this.pool.query<Job>(`UPDATE bell_monitor_jobs SET lease_until=now()+interval '60 seconds',lease_token=$1,attempts=attempts+1 WHERE id=(
@@ -142,8 +142,8 @@ export class MonitorStore {
       const watches = (await client.query<{ id: string }>("UPDATE bell_monitors SET next_scan_at=now()+interval '1 hour' WHERE status='active' AND NOT stopped AND next_scan_at<=now() RETURNING id")).rows;
       for (const watch of watches) {
         await this.enqueue("sync", `sync:${watch.id}`, watch.id, {}, client);
-        // An exhausted recovery scan keeps its saved progress and is restarted by the next scheduled check.
-        await client.query("UPDATE bell_monitor_jobs SET failed=false,attempts=0,next_at=now(),lease_until=NULL,lease_token=NULL WHERE id=$1 AND failed AND (lease_until IS NULL OR lease_until<now())", [`sync:${watch.id}`]);
+        // Recheck malformed records from the start; other failures retain progress with a renewed resume budget.
+        await client.query("UPDATE bell_monitor_jobs SET failed=false,attempts=0,next_at=now(),lease_until=NULL,lease_token=NULL,payload=CASE WHEN last_error='invalid_monitor_event' THEN '{}'::jsonb ELSE payload-'resumes' END WHERE id=$1 AND failed AND (lease_until IS NULL OR lease_until<now())", [`sync:${watch.id}`]);
       }
     });
   }
