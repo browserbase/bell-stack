@@ -59,6 +59,30 @@ describe("shared hosted-page integration boundary", () => {
     expect((session as unknown as { gateCaptcha: unknown }).gateCaptcha).toHaveBeenCalledTimes(1);
     expect(state.browser.url).toBeUndefined();
   });
+  it("does not launch a browser for a call cancelled while waiting for the lock", async () => {
+    const { session } = fixture();
+    let releaseStart!: () => void;
+    const started = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    let entered!: () => void;
+    const startEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const start = vi.spyOn(session, "start").mockImplementation(async () => {
+      entered();
+      await started;
+    });
+    const first = session.withHostedPage(new AbortController().signal, async () => "first");
+    await startEntered;
+    const controller = new AbortController();
+    const second = session.withHostedPage(controller.signal, async () => "second");
+    controller.abort();
+    releaseStart();
+    await expect(first).resolves.toBe("first");
+    await expect(second).rejects.toMatchObject({ name: "AbortError" });
+    expect(start).toHaveBeenCalledTimes(1);
+  });
   it("does no work for an already-cancelled call", async () => {
     const { session } = fixture();
     const operation = vi.fn();

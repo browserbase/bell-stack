@@ -109,6 +109,14 @@ describe("vault login credential boundary", () => {
     }
   });
 
+  it("redacts a browser start failure before the fill begins", async () => {
+    const { session, state } = fixture();
+    vi.spyOn(session, "start").mockRejectedValue(new Error(login.password));
+    await expect(session.secureLogin(login)).rejects.toThrow("Secure login failed");
+    expect(JSON.stringify(state)).not.toContain(login.password);
+    expect(state.traces).toContainEqual(expect.objectContaining({ name: "vault.login", kind: "error" }));
+  });
+
   it("redacts failures and releases the operation lock for the next attempt", async () => {
     const { session, state, fill } = fixture();
     fill.mockRejectedValueOnce(new Error(login.password));

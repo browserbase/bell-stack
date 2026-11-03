@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
+import { createPool } from "../postgres";
 import { z } from "zod";
 import { type Destination, type Owner, required } from "./config";
 
@@ -150,13 +151,54 @@ export class MonitorStore {
   async health(id: string, health: string, timestamp: string) {
     await this.pool.query("UPDATE bell_monitors SET health=$2,health_at=$3 WHERE id=$1 AND (health_at IS NULL OR health_at<$3)", [id, health, timestamp]);
   }
+  async markDispatchUnresolved(id: string, status: "failed" | "uncertain") {
+    await this.transaction(async client => {
+      await client.query("UPDATE bell_monitors SET status=$2 WHERE id=$1 AND status='dispatched'", [id, status]);
+      await client.query("UPDATE bell_monitor_jobs SET next_at=now() WHERE id=$1", [`reconcile:${id}`]);
+    });
+  }
+  async acceptInbox(id: string, event: unknown) {
+    await this.transaction(async client => {
+      const inserted = await client.query("INSERT INTO bell_monitor_inbox(id,payload) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id", [id, event]);
+      if (inserted.rowCount) await this.enqueue("inbox", `inbox:${id}`, null, { id }, client);
+    });
+  }
+  async inboxPayload(id: unknown): Promise<unknown> {
+    return (await this.pool.query("SELECT payload FROM bell_monitor_inbox WHERE id=$1", [id])).rows[0]?.payload;
+  }
+  async findByRemoteId(remoteId: string): Promise<Watch | undefined> {
+    return (await this.pool.query<Watch>("SELECT * FROM bell_monitors WHERE remote_id=$1", [remoteId])).rows[0];
+  }
+  async findPendingIdentity(id: string): Promise<Watch | undefined> {
+    return (await this.pool.query<Watch>("SELECT * FROM bell_monitors WHERE id=$1 AND status IN ('dispatched','uncertain','cancel_pending')", [id])).rows[0];
+  }
+  async saveLeasePayload(id: string, leaseToken: string, payload: Record<string, unknown>) {
+    await this.pool.query("UPDATE bell_monitor_jobs SET payload=$3 WHERE id=$1 AND lease_token=$2", [id, leaseToken, payload]);
+  }
+  async markCancelled(id: string) {
+    await this.pool.query("UPDATE bell_monitors SET status='cancelled' WHERE id=$1", [id]);
+  }
+  async knownEventIds(watchId: string, ids: string[]): Promise<Set<string>> {
+    const rows = (await this.pool.query<{ event_id: string }>("SELECT event_id FROM bell_monitor_events WHERE watch_id=$1 AND event_id=ANY($2::text[])", [watchId, ids])).rows;
+    return new Set(rows.map(row => row.event_id));
+  }
+  async markRecoveryGap(id: string) {
+    await this.pool.query("UPDATE bell_monitors SET recovery_gap=true WHERE id=$1", [id]);
+  }
+  async completeScan(id: string, started: string, anchor: string | null, gap: boolean) {
+    await this.pool.query("UPDATE bell_monitors SET last_scan_at=$2,scan_anchor=COALESCE($3,scan_anchor),recovery_gap=recovery_gap OR $4 WHERE id=$1", [id, started, anchor, gap]);
+  }
+  async recordEvent(watchId: string, eventId: string, event: unknown, jobId: string, payload: Record<string, unknown>) {
+    await this.transaction(async client => {
+      const inserted = await client.query("INSERT INTO bell_monitor_events (watch_id,event_id,payload) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING event_id", [watchId, eventId, event]);
+      if (inserted.rowCount) await this.enqueue("send", jobId, watchId, payload, client);
+    });
+  }
 }
 let singleton: MonitorStore | undefined;
 export function monitorStore(): MonitorStore {
   if (!singleton) {
-    const pool = new Pool({ connectionString: required("DATABASE_URL"), max: 5, connectionTimeoutMillis: 3_000, statement_timeout: 5_000 });
-    pool.on("error", () => console.error("Monitor database connection failed."));
-    singleton = new MonitorStore(pool);
+    singleton = new MonitorStore(createPool(required("DATABASE_URL"), "Monitor", { connectionTimeoutMillis: 3_000, idleTimeoutMillis: 10_000, statement_timeout: 5_000 }));
   }
   return singleton;
 }

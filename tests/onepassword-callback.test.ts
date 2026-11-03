@@ -40,6 +40,7 @@ describe("personal 1Password boundaries", () => {
     expect(capture).not.toHaveBeenCalled();
   });
   it("uses private non-recorded browsers and rejects reusable Contexts in personal mode", () => {
+    vi.stubEnv("ONEPASSWORD_ENABLED", "true");
     vi.stubEnv("BROWSERBASE_1PASSWORD_EXTENSION_ID", "uploaded-extension");
     vi.stubEnv("BROWSERBASE_CONTEXT_ID", "");
     const options = browserbaseLaunchOptions("test-key");

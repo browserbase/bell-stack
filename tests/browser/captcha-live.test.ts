@@ -1,6 +1,7 @@
 import { chromium, type Browser } from "playwright-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { CaptchaTransition } from "../../lib/browser/captcha";
 import { BrowserSession } from "../../server/browser/browser-session.js";
 import type { ConversationState } from "../../server/browser/types.js";
 
@@ -15,7 +16,10 @@ describe("opt-in hosted CAPTCHA marker fixture", () => {
         traces: [],
         browser: { provider: "not-started", status: "idle" },
       };
-      const session = new BrowserSession(state);
+      const transitions: CaptchaTransition[] = [];
+      const session = new BrowserSession(state, {
+        onCaptchaTransition: (transition) => transitions.push(transition),
+      });
       let fixtureBrowser: Browser | undefined;
       try {
         const fixture = "https://bell-fixture.invalid/captcha";
@@ -34,7 +38,6 @@ describe("opt-in hosted CAPTCHA marker fixture", () => {
         expect(state.traces.map((event) => event.name)).toEqual(
           expect.arrayContaining(["captcha.started", "captcha.finished", "captcha.observed"]),
         );
-        const transitions = session.drainCaptchaTransitions();
         expect(transitions.map((event) => event.type)).toEqual(["started", "finished"]);
         expect(JSON.stringify({ transitions, traces: state.traces })).not.toMatch(
           /devtools|debuggerFullscreenUrl|wss=/i,
@@ -46,8 +49,8 @@ describe("opt-in hosted CAPTCHA marker fixture", () => {
           await session.close();
         }
         expect(
-          (session as unknown as { captchaSubscriptions: Map<string, unknown> })
-            .captchaSubscriptions.size,
+          (session as unknown as { captchaGate: { subscriptions: Map<string, unknown> } })
+            .captchaGate.subscriptions.size,
         ).toBe(0);
       }
     },

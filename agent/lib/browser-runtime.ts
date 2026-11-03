@@ -1,3 +1,4 @@
+import type { CaptchaTransition } from "../../lib/browser/captcha";
 import { personalBrowserEnabled, withPersonalBrowserLock } from "../../server/onepassword/browser-policy";
 import {
   createAgentContext,
@@ -27,6 +28,7 @@ type BrowserOperation<T> = (browser: BrowserSession) => Promise<T>;
 interface BrowserRuntime {
   browser: BrowserSession;
   state: ConversationState;
+  captchaTransitions: CaptchaTransition[];
   idleTimer?: ReturnType<typeof setTimeout>;
   closing?: Promise<void>;
 }
@@ -65,11 +67,14 @@ function getRuntime(sessionId: string): BrowserRuntime {
       title: durable.browser.title,
     },
   };
+  const captchaTransitions: CaptchaTransition[] = [];
   const runtime = {
     state,
+    captchaTransitions,
     browser: createRuntimeBrowser(
       sessionId,
       state,
+      captchaTransitions,
       durable.browser.contextId,
       durable.browser.proxyLocation,
     ),
@@ -132,16 +137,6 @@ async function runBrowserOperationUnlocked<T>(sessionId: string, operation: Brow
         : {}),
     },
   };
-}
-
-function commitCaptchaQueue(runtime: BrowserRuntime): void {
-  const transitions = runtime.browser.drainCaptchaTransitions();
-  if (!transitions.length) return;
-  taskState.update((current) => {
-    let next = current;
-    for (const transition of transitions) next = applyCaptchaTransition(next, transition);
-    return updateTaskBrowser(next, runtime.state.browser);
-  });
 }
 
 export async function saveBrowserRuntime(sessionId: string): Promise<void> {
@@ -238,6 +233,7 @@ export async function createBrowserContext(
     runtime.browser = createRuntimeBrowser(
       sessionId,
       runtime.state,
+      runtime.captchaTransitions,
       context.id,
       runtime.state.browser.proxyLocation,
     );
@@ -270,6 +266,7 @@ export async function selectBrowserContext(
     runtime.browser = createRuntimeBrowser(
       sessionId,
       runtime.state,
+      runtime.captchaTransitions,
       contextId,
       runtime.state.browser.proxyLocation,
     );
@@ -318,9 +315,20 @@ export async function saveBrowserContext(
   };
 }
 
+function commitCaptchaQueue(runtime: BrowserRuntime): void {
+  if (!runtime.captchaTransitions.length) return;
+  const transitions = runtime.captchaTransitions.splice(0);
+  taskState.update((current) => {
+    let next = current;
+    for (const transition of transitions) next = applyCaptchaTransition(next, transition);
+    return updateTaskBrowser(next, runtime.state.browser);
+  });
+}
+
 function createRuntimeBrowser(
   sessionId: string,
   state: ConversationState,
+  captchaTransitions: CaptchaTransition[],
   contextId?: string,
   proxyLocation?: BrowserProxyLocation,
 ): BrowserSession {
@@ -328,6 +336,9 @@ function createRuntimeBrowser(
     contextId,
     proxyLocation,
     captcha: taskState.get().captcha,
+    onCaptchaTransition: (transition) => {
+      captchaTransitions.push(transition);
+    },
     ensureContext: personalBrowserEnabled() ? undefined : async (currentContextId) => {
       const context = await ensureAgentContext(sessionId, currentContextId);
       state.browser.contextId = context.id;

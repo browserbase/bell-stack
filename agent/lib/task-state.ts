@@ -1,5 +1,6 @@
 import { defineState } from "eve/context";
 
+import { captchaTimeoutMs, type CaptchaTransition } from "../../lib/browser/captcha";
 import type { BrowserProxyLocation, BrowserState } from "../../server/browser/types.js";
 
 export type TaskStatus =
@@ -7,7 +8,7 @@ export type TaskStatus =
 export type CaptchaStatus = "idle" | "solving" | "solved" | "errored" | "timed_out";
 export interface CaptchaJournalEntry {
   id: string;
-  type: "started" | "finished" | "errored" | "timed_out";
+  type: CaptchaTransition["type"];
   at: string;
 }
 export interface DurableCaptchaRecord {
@@ -19,12 +20,6 @@ export interface DurableCaptchaRecord {
   timedOutAt?: string;
   page?: { origin: string; path: string };
   journal: CaptchaJournalEntry[];
-}
-export interface CaptchaTransition {
-  id: string;
-  type: CaptchaJournalEntry["type"];
-  at: string;
-  page?: { origin: string; path: string };
 }
 export const CAPTCHA_JOURNAL_LIMIT = 32;
 export type BrowserLifecycle =
@@ -218,10 +213,6 @@ export function reconcileCaptchaAfterRestart(
     at: now,
     page: captcha.page,
   });
-}
-export function captchaTimeoutMs(): number {
-  const value = Number(process.env.BELL_CAPTCHA_TIMEOUT_MS ?? 30_000);
-  return Number.isFinite(value) && value > 0 ? value : 30_000;
 }
 function captchaBlocksGeneric(record: DurableTaskRecord): boolean {
   return (
