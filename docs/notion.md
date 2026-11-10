@@ -1,7 +1,9 @@
 # Notion personal memory
 
-Notion stores Bell's personal memory, notes, and activity history across conversations.
-Eve runs the agent, discovers Notion's MCP tools, and delivers OAuth consent through the
+Notion helps Bell pick up where a previous conversation left off. Bell can remember how
+you like to travel, resume a plan you started, or recall when a membership renews.
+
+Eve runs Bell, discovers Notion's MCP tools, and delivers OAuth consent through the
 web or Linq conversation. Bell connects directly to Notion MCP and supports Notion Free.
 See [Notion's MCP client guide](https://developers.notion.com/guides/mcp/build-mcp-client)
 for the OAuth and connection requirements.
@@ -55,7 +57,8 @@ Bell follows the [personal memory skill](../agent/skills/notion-memory/SKILL.md)
 recall, and verified saves.
 
 - **"Remember that I prefer aisle seats."** Save a preference in the existing memory destination.
-- **"Which airline seat do I prefer?"** Recall it in a new conversation.
+- **"Which bike repair shop did we shortlist?"** Pick up earlier research in a new conversation.
+- **"When does my museum membership renew?"** Look up the recorded date and flag when it needs a fresh check.
 - **"I prefer window seats now."** Update the existing preference.
 - **"Forget my seat preference."** Remove accessible copies within that scope and report any limits.
 
@@ -63,10 +66,10 @@ Bell reads Notion's MCP memory guidance and reuses the existing personal destina
 schemas. If a destination is missing, it asks where to save. Creating a new database,
 reorganizing content, sharing information, or scheduling work requires approval.
 
-Detailed notes and activity records use the chosen Notion locations, with concise references
-in memory when useful. Plans, attempted actions, and confirmed outcomes stay distinct.
-Purchase records may include products, merchant, actual amount/currency, dates and status;
-[Link's purchase guide](link.md#personal-purchase-history) covers that workflow.
+Bell can save recurring preferences, personal plans and next steps, useful research, and
+outcomes such as reservations, subscription changes, or purchases. It uses the chosen Notion
+locations and keeps planned, attempted, and confirmed actions distinct. See
+[Link's purchase guide](link.md#personal-purchase-history) for purchase record details.
 
 The current request, corrections, exclusions, and forget requests take priority over old
 notes. Credentials, payment tokens, private checkout fields, and raw transcripts are not

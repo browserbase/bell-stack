@@ -11,7 +11,7 @@
 - Linq: Messaging Infrastruture
 - 1Password: Authentication
 - Baselayer: Identity
-- Notion: Personal memory, notes, and activity history
+- Notion: Personal memory across conversations
 
 
 ## Run locally
@@ -39,7 +39,7 @@ pnpm dev
 | --- | --- | --- |
 | Browserbase + Stagehand | Browser sessions, automation, saved Contexts, and human handoff | [Browser runtime](docs/browser-runtime.md) |
 | Eve by Vercel | Agent configuration, tools, conversation state, and channels | [Eve in Bell](docs/repository.md#eve-by-vercel) |
-| Notion | Personal context, notes, decisions, and activity history across conversations | [Memory setup](docs/notion.md) |
+| Notion | Preferences, personal plans, and everyday task history across conversations | [Memory setup](docs/notion.md) |
 | Parallel | Public-web research and persistent watches with configurable frequency | Set `PARALLEL_API_KEY` in `.env`; [watch setup](docs/monitors.md) |
 | Linq | iMessage and SMS through a signed webhook and sender allowlist | [Messaging setup](docs/linq.md) |
 | Link by Stripe | Wallet authorization, spend approval, and checkout through Linq | [Sandbox and wallet setup](docs/link.md) |

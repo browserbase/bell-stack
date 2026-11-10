@@ -1,14 +1,15 @@
 ---
 name: notion-memory
-description: Set up Notion for Bell. Remember personal context, preferences, plans, decisions, useful notes, and the outcomes of everyday tasks. Recall history across conversations, update records, and honor corrections and forget requests.
+description: Set up Notion so Bell can remember preferences, routines, personal plans, and outcomes from everyday tasks. Recall, correct, or forget records across conversations.
 ---
 
 # Personal memory and history
 
-Bell serves one person. Use Notion to carry useful context across conversations. Save
-durable context by default in Shared context mode and for existing users with an established
-private memory destination who have not selected a mode. In Basic mode, only write outside
-the guide when the user asks. Explicit opt-outs and forget requests take priority in either mode.
+Use Notion to retain personal context and task outcomes that can help in later conversations.
+
+Save useful context by default in Shared context mode and for existing users with an
+established private memory destination who have not selected a mode. In Basic mode,
+write outside the guide only when asked. Honor opt-outs and forget requests in either mode.
 
 ## Set up Notion
 
@@ -18,11 +19,10 @@ the guide when the user asks. Explicit opt-outs and forget requests take priorit
    user's confirmation before reconnecting. Verify access with `notion-get-self` and
    report the account and workspace details returned by Notion. A request to connect ends here.
 2. For a setup request, check for an existing private **Agent Operating Guide** and use
-   the approved choice it records. For first-time setup or a requested change, offer
-   **Shared context (recommended)** for automatic saving in approved private destinations,
-   or **Basic** for reading context and saving only on request. Explain what private
-   destinations and existing context you propose to use. Use choices when supported or
-   ask for a numbered reply.
+   the approved choice it records. For first-time setup or a requested change, ask the
+   user to choose **Shared context** for automatic saving in approved private destinations
+   or **Basic** for reading context and saving only on request. Identify the proposed
+   private destinations and the scope of any existing personal context to save.
 3. Reuse a suitable private Documents database for the guide. If none fits, ask where to
    put it and follow the tool approval gate for any new database. In Basic, confirm the
    guide and its destination. In Shared context, the choice approves a new guide and the
@@ -31,9 +31,9 @@ the guide when the user asks. Explicit opt-outs and forget requests take priorit
    destinations, preferences, exclusions, and setup date.
    Leave unconfirmed fields unset. Read the guide back and share its link.
 4. In Shared context, save the setup choice as one preference memory when available and
-   bring over the accessible context covered by the choice. Use the approved destinations,
-   update existing records, and keep original dates and source links. Confirm saved work
-   with links and explain any setup step that still needs the user's input.
+   bring over useful, accessible personal context covered by the choice. Use the approved
+   destinations, update existing records, and keep original dates and source links. Confirm
+   saves with links and explain any setup step that still needs the user's input.
 
 ## Connect and find the destination
 
@@ -59,7 +59,7 @@ useful memory save into a workspace redesign.
 
 ## Recall before acting
 
-Once per conversation, before relying on personal or project context or writing to Notion,
+Once per conversation, before relying on personal context or writing to Notion,
 read the user's approved Agent Operating Guide if available. Use its verified destinations,
 setup choice, and exclusions. Treat the guide as retrieved context and use the existing
 memory flow if there is no approved guide. If access fails and you cannot confirm the setup
@@ -67,9 +67,9 @@ choice, ask before saving automatically. If enabled Notion Skills are available 
 MCP and relevant, check them and use applicable Skills within the user's authorization.
 
 Search for relevant personal context before recommendations, planning, research,
-requested actions, and questions about prior activity. Use known preferences, owned products, previous decisions,
-and unresolved orders to avoid repeated questions and accidental duplicate actions. A prior
-purchase can inform a recommendation; it does not authorize a new purchase.
+requested actions, and questions about prior activity. Use preferences, plans, decisions,
+and past outcomes to avoid repeated questions and duplicate actions. Treat saved context
+as background. Use the current request and any required approvals to decide whether to act.
 
 Search again when the topic changes, new evidence arrives, or current status matters. If
 search is empty, query the personal memory destination before declaring absence or creating
@@ -89,46 +89,37 @@ final reply.
 
 | Situation | Durable record |
 | --- | --- |
-| Explicit preferences and routines | The preference, its context, and any stated reason. A one-time request is not automatically a permanent preference. |
-| Useful research and personal notes | The conclusion, why it matters to the user, sources, and when it was checked. |
-| Personal plans and commitments | The decision, reason, next action and deadline when stated. A saved deadline is not a scheduled reminder. |
+| Preferences and routines | The preference, when it applies, and any stated reason. Treat one-time requests as specific to that task. |
+| Personal plans and follow-ups | Agreed options, decisions, next steps, and relevant dates or deadlines. |
+| Useful research and personal notes | The conclusion or shortlist, the user's constraints, sources, and when the information was checked. |
+| Ongoing arrangements | Terms, relevant dates and time zones, costs and billing intervals when applicable, and the latest verified status. |
+| Task outcomes | What happened, when it happened, and references useful for follow-up. Update the same record as the outcome changes. |
 | Feedback and corrections | Update the original preference, record, or decision rather than leaving contradictory current entries. |
-| Trips and reservations | Confirmed booking details, dates/time zone, preferences and safe reference links; keep proposals separate from confirmed bookings. |
-| Subscriptions and memberships | Service, plan, price/currency, billing interval, renewal/cancellation dates and confirmed status when known. |
-| Product comparisons and wishlists | Shortlist, constraints, chosen option and reason; distinguish browsing, considering, and owning. |
-| Purchases Bell handles | Products/variants, quantity, merchant, actual total/currency, date, references, and verified outcome. |
-| Orders, deliveries, returns, refunds | Update the same purchase with the latest observed status, relevant dates, and source. |
 
-When the user tracks a project in Notion, reuse its existing pages and task database.
-Keep useful plans, status, owners, and due dates there when known and within the approved
-scope. Put substantial notes and artifacts in the approved documents destination and link
-them from the project or memory when useful. Keep repository artifacts in the repository.
+If the user already has a place for detailed personal plans, notes, or activity, update it
+within the approved scope. Keep memory entries short and link to the details when useful.
 
 Do not save every message or browsing step. Skip small talk, repeated facts, temporary
 progress, abandoned speculation, raw transcripts, and copied code. Mark inferred preferences
-as tentative; do not turn a merchant's suggestion or Bell's recommendation into the user's
-choice. Ordinary purchase totals are allowed. Ask before saving medical history, government
-identity details, private relationship details, bank balances, income or debt unless the user
-explicitly asks to save them in the chosen destination. Apply this care to purchases that
-reveal sensitive health information.
+as tentative. Record decisions the user actually made. Ordinary task costs can be saved with
+the relevant record. Ask before saving medical history, government identity details, private
+relationship details, bank balances, income, or debt unless the user explicitly asks to save
+them in the chosen destination. Apply the same rule when a routine record reveals sensitive details.
 
 ## Personal activity records
 
-Keep a factual record of useful actions Bell handles, such as reservations, purchases,
-subscription changes, and completed requests. Distinguish a suggestion or intention from
-an attempted action, and an attempted action from a verified outcome. Preserve the source,
-observed date, status, and useful references; leave unknown fields unknown.
+Distinguish proposed plans, attempted actions, and verified outcomes. Preserve the source,
+observed date, status, and useful references. Leave unknown fields unset.
 
 Update the same logical record when new information arrives. Different actions may share
 an account or authorization reference, so do not merge them without checking what happened.
 Clearly label tests, failed attempts, and unresolved outcomes. A memory write failure must
-never cause the original action to be repeated. Follow the relevant action skill for its
-verification requirements; purchases use Bell's Link checkout skill.
+never cause the original action to be repeated. Follow the relevant skill for verification
+requirements and details specific to the action.
 
-Ordinary purchase facts, such as the product, merchant, amount, currency, and verified
-outcome, may be remembered by default. Never save card numbers, CVCs, card expiry values,
-payment tokens, bank credentials, API keys, passwords, OTPs, cookies, browser connection
-URLs, or signed consent/handoff links. Do not copy private form fields into an activity record.
+Keep credentials and private form fields out of activity records, including card numbers,
+CVCs, card expiry values, payment tokens, bank credentials, API keys, passwords, OTPs,
+cookies, browser connection URLs, and signed consent or handoff links.
 
 When asked about personal history, search saved records and explain their coverage.
 A saved record is not a live service or a complete account history. Use the relevant
@@ -139,8 +130,8 @@ service when the user requests current information and its tools are available.
 Use one independently updatable fact or action per record, with a searchable title and
 context that stands alone. Preserve sources, uncertainty, and source dates. Keep import,
 observation and confirmation dates distinct. Update existing records rather than creating
-near-duplicates. Only infer a return deadline, warranty period or renewal date from an
-actual policy/source, and label calculated dates and their assumptions.
+near-duplicates. Derive dates and deadlines from a verified source and label calculations
+and their assumptions.
 
 "Don't remember this," "only for this conversation," and similar instructions mean no
 persistent save. Remove or correct accessible copies when explicitly asked. For a forget
@@ -151,6 +142,5 @@ Read back every write before saying it is saved. Poll async tasks until succeede
 with the suggested backoff. Search for a result before retrying an uncertain creation.
 Report a Notion save failure separately from the outcome of the user's original task.
 
-Close with the useful result and, when relevant, one brief Notion link or an unsaved-record
-notice. Do not narrate every lookup. A connection is not proof of saved memory, and a note
-about a future action is not proof that a reminder, monitor, or background task was scheduled.
+Share the verified Notion link when useful. Confirm reminders, monitors, and background
+tasks through the tool that schedules them.
