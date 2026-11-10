@@ -1,8 +1,11 @@
-# Baselayer merchant access
+# Baselayer verified identity
 
-Bell's `merchant_access` tool mints an L2 credential and presents it to a compatible merchant
-inside the conversation's existing Browserbase browser. The same tool is available from the
-web interface and a Linq chat. Each conversation keeps its own browser.
+Baselayer lets a site confirm a verified person is behind the agent. The credential shares only
+what the site requires, never more. Bell’s `merchant_access` tool gets a short-lived Baselayer KYA
+credential for the operator and presents it to a compatible merchant inside the conversation’s
+existing Browserbase browser. The same tool is available from the web interface and a Linq chat.
+Each conversation keeps its own browser. See the [Baselayer docs](https://docs.baselayer.com) for
+the full protocol.
 
 ```text
 Bell -> merchant KYA profile -> Baselayer mint -> merchant nonce
@@ -29,8 +32,12 @@ presentation if the browser session started with logging enabled.
 The principal reference is the `principal_ref` returned after identity verification. It is not
 an onboarding session ID or an issued credential ID. The principal must be current and belong
 to the API key's organization and sandbox environment. Minting generates an ephemeral Ed25519
-keypair on the server and sends only its public JWK to Baselayer. L2 requests no optional identity
-attributes. Secrets, private keys, and credentials are not returned in the tool result.
+keypair on the server and sends only its public JWK to Baselayer. The credential shares only what
+the merchant’s profile requires. Secrets, private keys, and credentials are not returned in the
+tool result.
+
+Bell runs for one operator. In a multi-user app, verify each user once and use their own principal
+reference.
 
 Sandbox agent credentials usually expire after about one hour. The returned `expiresAt` or
 credential `exp` is authoritative. A new tool call mints a fresh credential. An expired identity
@@ -73,7 +80,7 @@ Set `BELL_DEMO_URL` to the protected resource and add its exact HTTPS origin to
 origin paths, or HTTP origins are accepted; tool URLs also reject queries, fragments, and embedded
 credentials.
 
-The merchant must publish `/.well-known/kya-profile.json` with its audience, an L2 scope listing
+The merchant must publish `/.well-known/kya-profile.json` with its audience, a scope listing
 the exact resource path, and a same-origin nonce endpoint. It must verify the issuer signature,
 expiry, revocation status, audience, and single-use key-binding proof. This repository contains
 the agent integration; the merchant verifier is deployed separately.
