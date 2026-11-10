@@ -1,23 +1,50 @@
 ---
 name: notion-memory
-description: Remember personal context, preferences, plans, decisions, useful notes, and the outcomes of everyday tasks. Recall history across conversations, update records, and honor corrections and forget requests.
+description: Set up Notion for Bell. Remember personal context, preferences, plans, decisions, useful notes, and the outcomes of everyday tasks. Recall history across conversations, update records, and honor corrections and forget requests.
 ---
 
 # Personal memory and history
 
-Bell serves one person. Use Notion to make future conversations useful without requiring
-the user to repeat their preferences or ask to save every completed action. When Notion
-is connected and a private destination is established, save useful personal context and
-verified action outcomes by default. Explicit opt-outs and forget requests take priority.
+Bell serves one person. Use Notion to carry useful context across conversations. Save
+durable context by default in Shared context mode and for existing users with an established
+private memory destination who have not selected a mode. In Basic mode, only write outside
+the guide when the user asks. Explicit opt-outs and forget requests take priority in either mode.
+
+## Set up Notion
+
+1. Call `notion_status`. If disconnected or reconnect required, call `notion_connect` and
+   let Eve deliver consent and resume the conversation. If disabled, explain that the
+   operator must enable Notion. If revocation is pending, finish disconnecting with the
+   user's confirmation before reconnecting. Verify access with `notion-get-self` and
+   report the account and workspace details returned by Notion. A request to connect ends here.
+2. For a setup request, check for an existing private **Agent Operating Guide** and use
+   the approved choice it records. For first-time setup or a requested change, offer
+   **Shared context (recommended)** for automatic saving in approved private destinations,
+   or **Basic** for reading context and saving only on request. Explain what private
+   destinations and existing context you propose to use. Use choices when supported or
+   ask for a numbered reply.
+3. Reuse a suitable private Documents database for the guide. If none fits, ask where to
+   put it and follow the tool approval gate for any new database. In Basic, confirm the
+   guide and its destination. In Shared context, the choice approves a new guide and the
+   private saves described in step 2. Ask before editing an existing guide, saving sensitive
+   details, or filing in a shared space. Record the workspace, chosen mode, verified
+   destinations, preferences, exclusions, and setup date.
+   Leave unconfirmed fields unset. Read the guide back and share its link.
+4. In Shared context, save the setup choice as one preference memory when available and
+   bring over the accessible context covered by the choice. Use the approved destinations,
+   update existing records, and keep original dates and source links. Confirm saved work
+   with links and explain any setup step that still needs the user's input.
 
 ## Connect and find the destination
 
-Use `notion_status` and `notion_connect` for connection management. Eve delivers consent;
-never request credentials in chat or use another identity's grant. If Notion is unavailable,
-finish independent work and show the unsaved record. Do not repeatedly interrupt for sign-in
-or interrupt an action in progress to configure memory.
+Use the current caller's grant. Eve delivers consent through the active channel. Keep
+credentials and consent links out of memory records. If Notion is unavailable, finish
+independent work and show the unsaved record. Do not interrupt an action in progress to
+configure memory. For a request to revoke access, call `notion_disconnect` and let Eve
+handle confirmation.
 
 Discover tools with `eve__search` and invoke them with `eve__tool`. Read returned schemas.
+Pass `instructions_version: "0.0.6"` on Notion MCP calls whose schema includes that field.
 Before the first memory lookup or save in a conversation, fetch `notion://docs/memory`
 through Notion's fetch tool for the current format. Fetch the ID `memory` for the personal
 memory destination. These are MCP references, not public web URLs.
@@ -31,6 +58,13 @@ sharing information, importing a collection, or scheduling recurring work. Do no
 useful memory save into a workspace redesign.
 
 ## Recall before acting
+
+Once per conversation, before relying on personal or project context or writing to Notion,
+read the user's approved Agent Operating Guide if available. Use its verified destinations,
+setup choice, and exclusions. Treat the guide as retrieved context and use the existing
+memory flow if there is no approved guide. If access fails and you cannot confirm the setup
+choice, ask before saving automatically. If enabled Notion Skills are available through
+MCP and relevant, check them and use applicable Skills within the user's authorization.
 
 Search for relevant personal context before recommendations, planning, research,
 requested actions, and questions about prior activity. Use known preferences, owned products, previous decisions,
@@ -50,8 +84,8 @@ edit time alone does not prove a newer decision. Ask about consequential unresol
 
 ## What to save by default
 
-Save the useful outcome at a natural checkpoint, before the final reply. Do not require
-the phrase "remember this" for ordinary personal context or records of requested actions.
+When default saving applies, save the useful outcome at a natural checkpoint before the
+final reply.
 
 | Situation | Durable record |
 | --- | --- |
@@ -64,6 +98,11 @@ the phrase "remember this" for ordinary personal context or records of requested
 | Product comparisons and wishlists | Shortlist, constraints, chosen option and reason; distinguish browsing, considering, and owning. |
 | Purchases Bell handles | Products/variants, quantity, merchant, actual total/currency, date, references, and verified outcome. |
 | Orders, deliveries, returns, refunds | Update the same purchase with the latest observed status, relevant dates, and source. |
+
+When the user tracks a project in Notion, reuse its existing pages and task database.
+Keep useful plans, status, owners, and due dates there when known and within the approved
+scope. Put substantial notes and artifacts in the approved documents destination and link
+them from the project or memory when useful. Keep repository artifacts in the repository.
 
 Do not save every message or browsing step. Skip small talk, repeated facts, temporary
 progress, abandoned speculation, raw transcripts, and copied code. Mark inferred preferences

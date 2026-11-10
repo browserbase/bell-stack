@@ -6,6 +6,7 @@ import { notionCallback } from "../server/notion/callback";
 import { NotionOAuth } from "../server/notion/oauth";
 import type { LockedState, NotionPersistence, NotionState } from "../server/notion/store";
 import { notionPrincipal, createNotionAuth } from "../agent/lib/notion-auth";
+import notionDisconnect from "../agent/tools/notion_disconnect";
 
 import { ContextContainer, contextStorage } from "../node_modules/eve/dist/src/context/container.js";
 import { AuthKey, SessionIdKey, SessionKey } from "../node_modules/eve/dist/src/context/keys.js";
@@ -162,6 +163,7 @@ describe("Notion OAuth", () => {
 });
 
 it("validates enabled configuration and refuses application or unrelated user identities", () => {
+  vi.stubEnv("NOTION_ENABLED", "false");
   expect(() => notionConfig()).toThrow();
   vi.stubEnv("NOTION_ENABLED", "true");
   vi.stubEnv("BELL_PUBLIC_URL", config.origin);
@@ -171,8 +173,28 @@ it("validates enabled configuration and refuses application or unrelated user id
   expect(() => notionOwner({ type: "app" })).toThrow();
   expect(() => notionOwner({ type: "user", issuer: "other", id: "operator" })).toThrow();
   expect(() => notionPrincipal({ session: { auth: { current: { principalType: "runtime" } } } } as never)).toThrow();
-  vi.stubEnv("BELL_PUBLIC_URL", "http://public.example");
+  vi.stubEnv("NOTION_ENABLED", "false");
   expect(() => notionConfig()).toThrow();
+  expect(notionConfig({ allowDisabled: true })).toEqual(config);
+  vi.stubEnv("BELL_PUBLIC_URL", "http://public.example");
+  expect(() => notionConfig({ allowDisabled: true })).toThrow();
+});
+
+it("requires confirmation to disconnect and can revoke a saved grant after disabling Notion", async () => {
+  vi.stubEnv("NOTION_ENABLED", "false");
+  const f = fixture();
+  await authorize(f);
+  const oauthModule = await import("../server/notion/oauth");
+  const service = vi.spyOn(oauthModule, "getNotionOAuth").mockReturnValue(f.oauth);
+  try {
+    const ctx = { session: { auth: { current: { principalType: "user", principalId: owner.id, issuer: owner.issuer } } } };
+    const approval = notionDisconnect.approval;
+    if (typeof approval !== "function") throw new Error("Expected a disconnect approval policy");
+    expect(await approval({} as never)).toBe("user-approval");
+    expect(await notionDisconnect.execute({}, ctx as never)).toEqual({ status: "disconnected" });
+    expect(service).toHaveBeenCalledWith({ allowDisabled: true });
+    expect(await f.oauth.status(owner)).toMatchObject({ status: "disconnected" });
+  } finally { service.mockRestore(); }
 });
 
 it("keeps callback responses private and rejects duplicate parameters before accessing storage", async () => {

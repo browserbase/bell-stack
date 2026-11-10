@@ -2,8 +2,9 @@
 
 Notion stores Bell's personal memory, notes, and activity history across conversations.
 Eve runs the agent, discovers Notion's MCP tools, and delivers OAuth consent through the
-web or Linq conversation. The integration uses [Notion MCP](https://developers.notion.com/guides/mcp/get-started-with-mcp)
-with direct OAuth and supports Notion Free.
+web or Linq conversation. Bell connects directly to Notion MCP and supports Notion Free.
+See [Notion's MCP client guide](https://developers.notion.com/guides/mcp/build-mcp-client)
+for the OAuth and connection requirements.
 
 ## Configure Notion
 
@@ -36,20 +37,22 @@ with direct OAuth and supports Notion Free.
    `/eve/v1/connections/.../callback/...` routes reachable without an interactive login wall.
    OAuth state and the framework callback capability protect these routes. Keep the existing
    web/session-control access restrictions, and exclude callback query strings from proxy logs.
-4. Restart Bell and start a new conversation. Ask **"Connect my Notion account."** Open the
-   private consent link, select your personal workspace, and return to the conversation.
-   Bell registers the OAuth client automatically; no manually created Notion API token or
-   client credentials are required.
+4. Restart Bell. Bell registers the OAuth client automatically on first use.
 
 Configuration and database connections load only when Notion is used. Keep
 `NOTION_ENABLED=false` to leave the integration disabled.
 
-## Use personal memory
+## Connect and use personal memory
 
-Bell uses the [personal memory skill](../agent/skills/notion-memory/SKILL.md) to recall
-preferences, routines, plans, decisions, notes, and prior activity before relevant tasks.
-When connected to the chosen private destination, it saves useful context and verified
-outcomes by default, updates existing records, and reads back writes before reporting success.
+Ask **"Set up Notion for Bell"** in the authenticated web chat or private Linq conversation.
+Open Eve's private consent link, select your workspace, and return to the same chat. Bell
+verifies the connection, then asks how to use it. Shared context saves useful records by
+default in approved private destinations. Basic saves new records on request. Bell records
+the choice and destinations in a private Agent Operating Guide. To authorize the account
+only, ask **"Connect my Notion account."**
+
+Bell follows the [personal memory skill](../agent/skills/notion-memory/SKILL.md) for setup,
+recall, and verified saves.
 
 - **"Remember that I prefer aisle seats."** Save a preference in the existing memory destination.
 - **"Which airline seat do I prefer?"** Recall it in a new conversation.
@@ -83,14 +86,11 @@ across workers. Lost single-use exchange/refresh responses require fresh consent
 retrying a possibly consumed credential. Old grants are revoked before replacement consent;
 a changed public origin registers a client for the new callback.
 
-Use `notion_status` to inspect the stored grant. A connected status does not verify remote
-access or a saved memory. Use `notion_disconnect` to block access and revoke the grant.
-If revocation fails, encrypted tokens remain for retry and access stays blocked. Retry
-disconnect to finish. Notion content is unaffected.
-
-Disabling the integration does not revoke or erase a stored grant. Disconnect before
-disabling to revoke access too. If the encryption key is lost, revoke Bell in Notion and
-remove the unreadable connection row before reconnecting.
+Use `notion_status` to inspect the stored grant. To revoke it, ask Bell to disconnect Notion
+and confirm through Eve. If revocation fails, access stays blocked and the encrypted grant
+remains available for retry. Disconnect also works with `NOTION_ENABLED=false` if Bell still
+has the database configuration and encryption key. If the key is lost, revoke Bell in
+Notion and remove the unreadable connection row before reconnecting.
 
 Bell checks the stored grant before each remote tool call, including when Eve caches a
 bearer within a step. Already dispatched requests may finish after disconnect. Schema changes

@@ -224,7 +224,7 @@ export class NotionOAuth {
 }
 
 let service: NotionOAuth | undefined;
-export function getNotionOAuth() {
-  const config = notionConfig();
+export function getNotionOAuth(options?: Parameters<typeof notionConfig>[0]) {
+  const config = notionConfig(options);
   return service ??= new NotionOAuth(config, createNotionStore(config.databaseUrl, config.key));
 }

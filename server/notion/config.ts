@@ -16,8 +16,8 @@ export function notionOwner(principal: ConnectionPrincipal): string {
   return JSON.stringify([principal.issuer, principal.id]);
 }
 
-export function notionConfig() {
-  if (!notionEnabled()) return failed("notion_disabled");
+export function notionConfig({ allowDisabled = false } = {}) {
+  if (!allowDisabled && !notionEnabled()) return failed("notion_disabled");
   const origin = process.env.BELL_PUBLIC_URL?.trim() ?? "";
   let url: URL;
   try { url = new URL(origin); } catch { return failed("invalid_public_url"); }

@@ -130,10 +130,10 @@ Disconnect does not cancel orders or merchant subscriptions or undo an already s
 
 ## Personal purchase history
 
-Purchases are one of Bell's personal assistant capabilities. When Notion is connected to
-your chosen private destination, the purchase skill directs Bell to save or update the
-purchase record after checking the outcome. It records known products/variants, quantity,
-merchant, actual amount/currency, observed dates, safe references, and verified status.
+Bell can save or update a purchase record in your chosen private Notion destination after
+checking the outcome. Your Notion setup choice controls whether Bell saves by default or
+only on request. The record includes known products and variants, quantity, merchant,
+actual amount and currency, observed dates, safe references, and verified status.
 Spend approval and submission alone do not establish a completed purchase; unresolved
 outcomes remain labeled as such, and sandbox tests stay separate from real ownership.
 
