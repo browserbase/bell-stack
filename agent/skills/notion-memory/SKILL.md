@@ -16,20 +16,24 @@ write outside the guide only when asked. Honor opt-outs and forget requests in e
 1. Call `notion_status`. If disconnected or reconnect required, call `notion_connect` and
    let Eve deliver consent and resume the conversation. If disabled, explain that the
    operator must enable Notion. If revocation is pending, finish disconnecting with the
-   user's confirmation before reconnecting. Verify access with `notion-get-self` and
-   report the account and workspace details returned by Notion. A request to connect ends here.
-2. For a setup request, check for an existing private **Agent Operating Guide** and use
-   the approved choice it records. For first-time setup or a requested change, ask the
+   user's confirmation before reconnecting. Verify the account and workspace with
+   `notion-get-self`. Stop after verification if the user requested authorization only.
+2. Check for an approved private **Agent Operating Guide**. Reuse its recorded mode and
+   destinations unless the user asks to change them. The presence of Notion's Memories
+   database or a profile page does not establish Bell's setup. When setup is needed,
+   identify the private guide destination and any memory writes in scope, then ask the
    user to choose **Shared context** for automatic saving in approved private destinations
-   or **Basic** for reading context and saving only on request. Identify the proposed
-   private destinations and the scope of any existing personal context to save.
-3. Reuse a suitable private Documents database for the guide. If none fits, ask where to
-   put it and follow the tool approval gate for any new database. In Basic, confirm the
-   guide and its destination. In Shared context, the choice approves a new guide and the
-   private saves described in step 2. Ask before editing an existing guide, saving sensitive
-   details, or filing in a shared space. Record the workspace, chosen mode, verified
-   destinations, preferences, exclusions, and setup date.
-   Leave unconfirmed fields unset. Read the guide back and share its link.
+   or **Basic** for reading context and saving only on request. Both modes include the guide.
+3. Put a new **Agent Operating Guide** in a suitable private documents database. If none
+   fits, create a private **Bell Documents** database with a title property and save the
+   guide as a row. If the database tool requires a parent, use a verified private parent
+   or create a private **Bell** page to hold the database. Include this fallback in the
+   scope of the mode choice. The choice approves the proposed private setup. Follow Eve's
+   database creation approval and ask for a destination only if the tools cannot provide
+   a verified private one. Check for an existing setup database before retrying creation.
+   Ask before editing an existing guide, saving sensitive details, or filing in a shared
+   space. Record the workspace, mode, verified destinations, preferences, exclusions, and
+   setup date. Leave unconfirmed fields unset. Read the guide back and share its link.
 4. In Shared context, save the setup choice as one preference memory when available and
    bring over useful, accessible personal context covered by the choice. Use the approved
    destinations, update existing records, and keep original dates and source links. Confirm
@@ -53,9 +57,9 @@ Reuse the user's personal memory destination and existing locations for detailed
 or records. Search/read their structure before writing. Use the existing memory destination
 for a concise action record if no separate history location is configured. Put additional
 fields in the body when the current schema has no matching property; never invent schema
-properties or enum values. Ask before creating a new destination/schema, changing access,
-sharing information, importing a collection, or scheduling recurring work. Do not turn a
-useful memory save into a workspace redesign.
+properties or enum values. Ask before creating a destination or schema outside the approved
+setup, changing access, sharing information, importing a collection, or scheduling recurring
+work. Do not turn a useful memory save into a workspace redesign.
 
 ## Recall before acting
 

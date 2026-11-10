@@ -46,12 +46,13 @@ Configuration and database connections load only when Notion is used. Keep
 
 ## Connect and use personal memory
 
-Ask **"Set up Notion for Bell"** in the authenticated web chat or private Linq conversation.
+Ask **"Connect my Notion account"** in the authenticated web chat or private Linq conversation.
 Open Eve's private consent link, select your workspace, and return to the same chat. Bell
-verifies the connection, then asks how to use it. Shared context saves useful records by
-default in approved private destinations. Basic saves new records on request. Bell records
-the choice and destinations in a private Agent Operating Guide. To authorize the account
-only, ask **"Connect my Notion account."**
+verifies the connection and offers setup if you haven't configured it. Shared context
+saves useful records by default in approved private destinations. Basic saves new records
+on request. Bell records the choice and destinations in an **Agent Operating Guide** in a
+private documents database. If you don't have a suitable database, Bell proposes creating
+**Bell Documents** and requests approval through Eve.
 
 Bell follows the [personal memory skill](../agent/skills/notion-memory/SKILL.md) for setup,
 recall, and verified saves.
