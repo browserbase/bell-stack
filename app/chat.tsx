@@ -78,8 +78,8 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
       </header>
       <section className="workspace">
         <div className="conversation">
-          <h2>How can I help?</h2>
-          <p className="muted">Get help with everyday tasks, research, plans, or shopping.</p>
+          <h2>Ask. Browse. Verify.</h2>
+          <p className="muted">One conversation, one persistent browser.</p>
           <button
             className="starter"
             disabled={waiting}
