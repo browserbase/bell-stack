@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { operatorAuth } from "../../server/operator-auth";
+import { localOperatorAuth, operatorAuth } from "../../server/operator-auth";
 
 const password = "synthetic-operator-password-at-least-32-bytes";
 const origin = "https://bell.example";
@@ -28,7 +28,7 @@ describe("operator authentication", () => {
 
   it("rejects unauthenticated users and accepts the configured operator", () => {
     expect(operatorAuth(new Request(origin))).toBeNull();
-    expect(operatorAuth(request("/"))).not.toBeNull();
+    expect(operatorAuth(request("/"))).toMatchObject({ principalType: "user", issuer: "bell:operator", principalId: "operator" });
   });
 
   it("rejects cross-origin writes even with an authenticated operator", () => {
@@ -43,4 +43,17 @@ describe("operator authentication", () => {
       method: "POST", headers: { authorization: "Bearer synthetic-token" }, body: "{}",
     }))).toBeNull();
   });
+});
+
+
+it.each(["true", "false"])("keeps the operator identity stable with NOTION_ENABLED=%s", async enabled => {
+  vi.stubEnv("NOTION_ENABLED", enabled);
+  vi.stubEnv("EVE_DEV", "1");
+  const identity = { principalType: "user", issuer: "bell:operator", principalId: "operator" };
+  expect(operatorAuth(request("/"))).toMatchObject(identity);
+  expect(await localOperatorAuth(new Request("http://127.0.0.1:4320/"))).toMatchObject(identity);
+  expect(await localOperatorAuth(new Request("http://foreign.example/"))).toBeNull();
+  vi.stubEnv("EVE_DEV", "0");
+  vi.stubEnv("VERCEL_ENV", "production");
+  expect(await localOperatorAuth(new Request("http://127.0.0.1:4320/"))).toBeNull();
 });
