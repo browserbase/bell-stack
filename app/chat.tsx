@@ -39,22 +39,19 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
       setError("The request failed. If the development server restarted, start a fresh conversation.");
     }
   }
-  function startFreshConversation() {
-    agent.reset();
-    setInput("");
-    setError("");
-    router.push("/");
-  }
   async function newConversation() {
     if (waiting) return;
     setRetiring(true);
     setError("");
     try {
-      if (agent.session)
-        await new Client({ host: "" }).sessions.attach(agent.session.sessionId).reset();
-      startFreshConversation();
+      const activeSessionId = agent.session?.sessionId ?? sessionId;
+      if (activeSessionId)
+        await new Client({ host: "" }).sessions.attach(activeSessionId).reset();
+      agent.reset();
+      setInput("");
+      router.push("/");
     } catch {
-      setError("Could not close this conversation. If the development server restarted, start a fresh conversation.");
+      setError("Could not close this conversation. Try again.");
     } finally {
       setRetiring(false);
     }
@@ -123,7 +120,7 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
           {(error || agent.error) && (
             <p role="alert">
               {error || "The agent request failed. If the development server restarted, start a fresh conversation."}
-              {" "}<button type="button" onClick={startFreshConversation}>Start a fresh conversation</button>
+              {" "}<button type="button" disabled={waiting} onClick={() => void newConversation()}>Start a fresh conversation</button>
             </p>
           )}
           {pending.map((request) => (

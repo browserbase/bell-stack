@@ -19,8 +19,7 @@ const sender: ConnectionPrincipal = { type: "user", issuer: "linq", id: "linq:se
 const callbackUrl = "http://127.0.0.1:4274/eve/v1/connections/notion/callback/attempt/capability";
 const config = { origin: "https://bell.example", redirectUri: "https://bell.example/api/notion/oauth/callback",
   databaseUrl: "postgres://unused", key: Buffer.alloc(32, 1) };
-const metadata = { issuer: "https://mcp.notion.com", authorization_endpoint: "https://mcp.notion.com/authorize",
-  token_endpoint: "https://mcp.notion.com/token", registration_endpoint: "https://mcp.notion.com/register", revocation_endpoint: "https://mcp.notion.com/token" };
+const issuer = "https://mcp.notion.com";
 
 class MemoryStore implements NotionPersistence {
   rows = new Map<string, NotionState>();
@@ -37,10 +36,9 @@ function fixture() {
   const store = new MemoryStore();
   const fetcher = vi.fn<typeof fetch>(async (input, init) => {
     const url = String(input);
-    if (url.endsWith("oauth-authorization-server")) return Response.json(metadata);
-    if (url.endsWith("/register")) return Response.json({ client_id: "registered-client" }, { status: 201 });
-    if (url.endsWith("/token") && new URLSearchParams(String(init?.body)).has("token")) return new Response(null, { status: 200 });
-    if (url.endsWith("/token")) return Response.json({ access_token: "access", refresh_token: "refresh", token_type: "Bearer", expires_in: 3600 });
+    if (url === `${issuer}/register`) return Response.json({ client_id: "registered-client" }, { status: 201 });
+    if (url === `${issuer}/token` && new URLSearchParams(String(init?.body)).has("token")) return new Response(null, { status: 200 });
+    if (url === `${issuer}/token`) return Response.json({ access_token: "access", refresh_token: "refresh", token_type: "Bearer", expires_in: 3600 });
     throw new Error("Unexpected request");
   });
   let now = 1_000_000;
@@ -70,7 +68,7 @@ describe("Notion OAuth", () => {
     const pending = f.store.rows.get(notionOwner(owner))!.pending!;
     expect(url.searchParams.get("code_challenge")).toBe(hash(pending.verifier));
     expect(url.searchParams.get("redirect_uri")).toBe(config.redirectUri);
-    const target = new URL(await f.oauth.forward({ state: pending.state, code: "code", iss: metadata.issuer, returnTo: "https://evil.example" }));
+    const target = new URL(await f.oauth.forward({ state: pending.state, code: "code", iss: issuer, returnTo: "https://evil.example" }));
     expect(target.origin).toBe(config.origin);
     expect(target.pathname).toBe(new URL(callbackUrl).pathname);
     expect(target.searchParams.has("returnTo")).toBe(false);
@@ -112,14 +110,13 @@ describe("Notion OAuth", () => {
     const f = fixture();
     await authorize(f);
     f.advance(3_600_000);
-    f.fetcher.mockImplementation(async input => String(input).endsWith("/token")
-      ? Response.json({ access_token: "rotated-access", refresh_token: "rotated-refresh", token_type: "Bearer", expires_in: 3600 })
-      : Response.json(metadata));
+    f.fetcher.mockResolvedValueOnce(Response.json({
+      access_token: "rotated-access", refresh_token: "rotated-refresh", token_type: "Bearer", expires_in: 3600,
+    }));
     expect((await f.oauth.getToken(owner)).token).toBe("rotated-access");
     expect(f.store.rows.get(notionOwner(owner))!.tokens!.refreshToken).toBe("rotated-refresh");
     f.advance(3_600_000);
-    f.fetcher.mockImplementation(async input => String(input).endsWith("/token")
-      ? Response.json({ error: "invalid_grant" }, { status: 400 }) : Response.json(metadata));
+    f.fetcher.mockResolvedValueOnce(Response.json({ error: "invalid_grant" }, { status: 400 }));
     await expect(f.oauth.getToken(owner)).rejects.toThrow();
     expect(f.store.rows.get(notionOwner(owner))!.status).toBe("reconnect");
     const count = f.fetcher.mock.calls.length;
@@ -132,10 +129,7 @@ describe("Notion OAuth", () => {
     const start = await f.oauth.start(owner, callbackUrl);
     const params = { state: new URL(start.challenge.url).searchParams.get("state")!, code: "code" };
     await f.oauth.forward(params);
-    f.fetcher.mockImplementation(async input => {
-      if (String(input).endsWith("/token")) throw new Error("Lost response with private upstream details");
-      return Response.json(metadata);
-    });
+    f.fetcher.mockRejectedValueOnce(new Error("Lost response with private upstream details"));
     await expect(f.oauth.complete(owner, callbackUrl, start.resume, params)).rejects.toThrow();
     const count = f.fetcher.mock.calls.length;
     await expect(f.oauth.complete(owner, callbackUrl, start.resume, params)).rejects.toThrow();
@@ -154,11 +148,20 @@ describe("Notion OAuth", () => {
     expect(f.store.rows.get(notionOwner(owner))!.client!.id).toBe("registered-client");
   });
 
-  it("refuses OAuth discovery that would send credentials to another host", async () => {
+  it("uses fixed Notion OAuth URLs for consent, registration, exchange, refresh, and revocation", async () => {
     const f = fixture();
-    f.fetcher.mockResolvedValue(Response.json({ ...metadata, token_endpoint: "https://evil.example/token" }));
-    await expect(f.oauth.start(owner, callbackUrl)).rejects.toThrow();
-    expect(f.fetcher).toHaveBeenCalledTimes(1);
+    const { start } = await authorize(f);
+    const authorization = new URL(start.challenge.url);
+    expect(authorization.origin + authorization.pathname).toBe(`${issuer}/authorize`);
+    f.advance(3_600_000);
+    await f.oauth.getToken(owner);
+    await f.oauth.disconnect(owner);
+    expect(f.fetcher.mock.calls.map(([url, init]) => [url, init?.method, init?.redirect])).toEqual([
+      [`${issuer}/register`, "POST", "error"],
+      [`${issuer}/token`, "POST", "error"],
+      [`${issuer}/token`, "POST", "error"],
+      [`${issuer}/token`, "POST", "error"],
+    ]);
   });
 });
 
@@ -213,16 +216,14 @@ it("keeps callback responses private and rejects duplicate parameters before acc
 it("blocks access and replacement consent until a failed remote revocation is retried", async () => {
   const f = fixture();
   const { params } = await authorize(f);
-  f.fetcher.mockImplementation(async input => String(input).endsWith("/token")
-    ? new Response(null, { status: 503 }) : Response.json(metadata));
+  f.fetcher.mockResolvedValueOnce(new Response(null, { status: 503 }));
   await expect(f.oauth.disconnect(owner)).rejects.toMatchObject({ reason: "revocation_failed_retry_disconnect" });
   expect(await f.oauth.status(owner)).toMatchObject({ status: "disconnect_pending" });
   expect(f.store.rows.get(notionOwner(owner))!.tokens).toBeDefined();
   await expect(f.oauth.getToken(owner)).rejects.toMatchObject({ reason: "disconnect_pending" });
   await expect(f.oauth.start(owner, callbackUrl)).rejects.toMatchObject({ reason: "disconnect_pending" });
   await expect(f.oauth.forward(params)).rejects.toThrow();
-  f.fetcher.mockImplementation(async input => String(input).endsWith("/token")
-    ? new Response(null, { status: 200 }) : Response.json(metadata));
+  f.fetcher.mockResolvedValueOnce(new Response(null, { status: 200 }));
   expect(await f.oauth.disconnect(owner)).toEqual({ status: "disconnected" });
   const call = f.fetcher.mock.calls.at(-1)!;
   const body = new URLSearchParams(String(call[1]?.body));

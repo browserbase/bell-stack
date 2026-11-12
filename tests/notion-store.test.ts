@@ -11,9 +11,6 @@ const databaseUrl = process.env.TEST_NOTION_DATABASE_URL ?? process.env.TEST_LIN
 const principal = { type: "user" as const, issuer: "linq", id: "linq:operator" };
 const owner = notionOwner(principal);
 const callbackUrl = "https://bell.example/eve/v1/connections/notion/callback/attempt/capability";
-const metadata = { issuer: "https://mcp.notion.com", authorization_endpoint: "https://mcp.notion.com/authorize",
-  token_endpoint: "https://mcp.notion.com/token", registration_endpoint: "https://mcp.notion.com/register",
-  revocation_endpoint: "https://mcp.notion.com/token" };
 
 describe.skipIf(!databaseUrl)("Notion PostgreSQL storage", () => {
   const schema = `notion_test_${randomUUID().replaceAll("-", "")}`;
@@ -44,8 +41,8 @@ describe.skipIf(!databaseUrl)("Notion PostgreSQL storage", () => {
     await pool.query("TRUNCATE bell_notion_connections");
     now = 1_000_000;
     fetcher = vi.fn<typeof fetch>(async (input, init) => {
-      if (String(input).endsWith("oauth-authorization-server")) return Response.json(metadata);
-      if (String(input).endsWith("/register")) return Response.json({ client_id: "private-client" });
+      if (input === "https://mcp.notion.com/register") return Response.json({ client_id: "private-client" });
+      if (input !== "https://mcp.notion.com/token") throw new Error("Unexpected request");
       const fields = new URLSearchParams(String(init?.body));
       if (fields.has("token")) return new Response(null, { status: 200 });
       return Response.json({ access_token: "private-access", refresh_token: "private-refresh", token_type: "Bearer", expires_in: 3600 });
@@ -92,17 +89,31 @@ describe.skipIf(!databaseUrl)("Notion PostgreSQL storage", () => {
     expect(refreshes).toHaveLength(1);
   });
 
+  it("does not replay a refresh request with a lost response after restarting", async () => {
+    await authorize();
+    now += 3_600_000;
+    fetcher.mockClear();
+    fetcher.mockRejectedValueOnce(new DOMException("Refresh timed out", "TimeoutError"));
+
+    await expect(oauth.getToken(principal)).rejects.toMatchObject({ name: "ConnectionAuthorizationRequiredError" });
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith("https://mcp.notion.com/token", expect.objectContaining({ method: "POST" }));
+    expect(new URLSearchParams(String(fetcher.mock.calls[0][1]?.body)).get("refresh_token")).toBe("private-refresh");
+
+    const restarted = new NotionOAuth(config, new NotionStore(pool, key), fetcher, () => now);
+    expect(await restarted.status(principal)).toEqual({ status: "reconnect_required", refreshable: true });
+    await expect(restarted.getToken(principal)).rejects.toMatchObject({ name: "ConnectionAuthorizationRequiredError" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("persists a failed revocation as blocked and invalidates callbacks across restarts", async () => {
     const params = await authorize();
-    fetcher.mockImplementation(async input => String(input).endsWith("/token")
-      ? new Response(null, { status: 503 }) : Response.json(metadata));
+    fetcher.mockResolvedValueOnce(new Response(null, { status: 503 }));
     await expect(oauth.disconnect(principal)).rejects.toThrow();
     const restarted = new NotionOAuth(config, new NotionStore(pool, key), fetcher, () => now);
     expect(await restarted.status(principal)).toMatchObject({ status: "disconnect_pending" });
     await expect(restarted.getToken(principal)).rejects.toThrow();
     await expect(restarted.forward(params)).rejects.toThrow();
-    fetcher.mockImplementation(async input => String(input).endsWith("/token")
-      ? new Response(null, { status: 200 }) : Response.json(metadata));
+    fetcher.mockResolvedValueOnce(new Response(null, { status: 200 }));
     expect(await restarted.disconnect(principal)).toEqual({ status: "disconnected" });
     expect((await restarted.status(principal)).status).toBe("disconnected");
   });

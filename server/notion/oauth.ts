@@ -2,25 +2,16 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { ConnectionAuthorizationRequiredError, type ConnectionPrincipal } from "eve/connections";
 import { z } from "zod";
 import { hash } from "../encrypted-record";
-import { failed, notionConfig, notionOwner } from "./config";
+import { failed, notionConfig, notionEndpoint, notionOwner } from "./config";
 import { createNotionStore, type NotionPersistence, type NotionState, type Tokens, type LockedState } from "./store";
 
 const issuer = "https://mcp.notion.com";
-const metadataSchema = z.object({
-  issuer: z.literal(issuer), authorization_endpoint: z.url(), token_endpoint: z.url(), registration_endpoint: z.url(),
-  revocation_endpoint: z.url(),
-});
 const tokenSchema = z.object({
   access_token: z.string().min(1), refresh_token: z.string().min(1).optional(),
   token_type: z.string().refine(value => value.toLowerCase() === "bearer"),
   expires_in: z.number().int().positive().max(365 * 24 * 60 * 60),
 });
 export type NotionResume = { attemptId: string };
-
-function trustedEndpoint(value: string): boolean {
-  const url = new URL(value);
-  return url.origin === issuer && !url.username && !url.password && !url.hash;
-}
 
 function parseCallback(params: Readonly<Record<string, string>>): { state: string; code?: string; error?: string } {
   const { state, code, error, iss } = params;
@@ -36,30 +27,22 @@ export class NotionOAuth {
     private readonly fetcher: typeof fetch = fetch, private readonly now: () => number = Date.now,
   ) {}
 
-  private async request(url: string, init: RequestInit = {}) {
-    // Only the verified Notion issuer may receive credentials or registration data.
-    if (!trustedEndpoint(url)) return failed("invalid_oauth_endpoint");
-    try { return await this.fetcher(url, { ...init, redirect: "error", signal: AbortSignal.timeout(10_000) }); }
+  private async post(path: "register" | "token", init: RequestInit) {
+    try {
+      return await this.fetcher(`${issuer}/${path}`, {
+        ...init, method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
+      });
+    }
     catch { return failed("notion_unavailable"); }
   }
 
-  private async metadata() {
-    const response = await this.request(`${issuer}/.well-known/oauth-authorization-server`);
-    if (!response.ok) return failed("oauth_discovery_failed");
-    const parsed = metadataSchema.safeParse(await response.json().catch(() => null));
-    if (!parsed.success || [parsed.data.authorization_endpoint, parsed.data.token_endpoint,
-      parsed.data.registration_endpoint, parsed.data.revocation_endpoint].some(endpoint => !trustedEndpoint(endpoint)))
-      return failed("invalid_oauth_metadata");
-    return parsed.data;
-  }
-
   private async exchange(state: NotionState, fields: Record<string, string>, previousRefresh?: string): Promise<Tokens> {
-    if (!state.client) return failed("client_missing");
-    const metadata = await this.metadata();
-    const response = await this.request(metadata.token_endpoint, {
-      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    const { client } = state;
+    if (!client) return failed("client_missing");
+    const response = await this.post("token", {
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
       body: new URLSearchParams({
-        client_id: state.client.id, ...(state.client.secret ? { client_secret: state.client.secret } : {}), ...fields,
+        client_id: client.id, ...(client.secret ? { client_secret: client.secret } : {}), ...fields,
       }),
     });
     if (!response.ok) return failed("token_exchange_failed_reconnect");
@@ -87,9 +70,10 @@ export class NotionOAuth {
       // Persist invalidation before using a rotating refresh token. Crashes require reconnect.
       db.value.status = "reconnect";
       await db.save();
-      if (!old.refreshToken) throw new ConnectionAuthorizationRequiredError("notion");
+      const { refreshToken } = old;
+      if (!refreshToken) throw new ConnectionAuthorizationRequiredError("notion");
       try {
-        const tokens = await this.exchange(db.value, { grant_type: "refresh_token", refresh_token: old.refreshToken }, old.refreshToken);
+        const tokens = await this.exchange(db.value, { grant_type: "refresh_token", refresh_token: refreshToken }, refreshToken);
         db.value.tokens = tokens;
         db.value.status = "active";
         await db.save();
@@ -111,10 +95,9 @@ export class NotionOAuth {
       if (db.value.status === "disconnecting") return failed("disconnect_pending");
       // Revoke before replacement consent; the provider can share a grant across tokens.
       if (db.value.tokens) await this.revoke(db);
-      const metadata = await this.metadata();
       if (!db.value.client || db.value.client.redirectUri !== this.config.redirectUri) {
-        const response = await this.request(metadata.registration_endpoint, {
-          method: "POST", headers: { "content-type": "application/json", accept: "application/json" },
+        const response = await this.post("register", {
+          headers: { "content-type": "application/json", accept: "application/json" },
           body: JSON.stringify({ client_name: "Bell", redirect_uris: [this.config.redirectUri],
             grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" }),
         });
@@ -132,10 +115,10 @@ export class NotionOAuth {
         db.value.pending = pending;
         await db.save();
       }
-      const url = new URL(metadata.authorization_endpoint);
+      const url = new URL("/authorize", issuer);
       url.search = new URLSearchParams({ client_id: db.value.client.id, redirect_uri: this.config.redirectUri,
         response_type: "code", scope: "default", state: pending.state,
-        code_challenge: hash(pending.verifier), code_challenge_method: "S256", resource: "https://mcp.notion.com/mcp" }).toString();
+        code_challenge: hash(pending.verifier), code_challenge_method: "S256", resource: notionEndpoint }).toString();
       return { challenge: { displayName: "Notion", url: url.href, expiresAt: new Date(pending.expiresAt).toISOString(),
         instructions: "Sign in to your Notion workspace, then return to Bell. Keep this link private." },
         resume: { attemptId: pending.id } };
@@ -177,7 +160,7 @@ export class NotionOAuth {
       pending.status = "exchanging";
       await db.save();
       const tokens = await this.exchange(db.value, { grant_type: "authorization_code", code: callback.code,
-        redirect_uri: this.config.redirectUri, code_verifier: pending.verifier, resource: "https://mcp.notion.com/mcp" });
+        redirect_uri: this.config.redirectUri, code_verifier: pending.verifier, resource: notionEndpoint });
       db.value.tokens = tokens;
       db.value.status = "active";
       pending.status = "completed";
@@ -206,10 +189,10 @@ export class NotionOAuth {
     await db.save();
     if (db.value.tokens) {
       if (!db.value.client) return failed("client_missing");
-      const metadata = await this.metadata();
       const tokens = db.value.tokens;
-      const response = await this.request(metadata.revocation_endpoint, {
-        method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+      // Notion serves revocation and token exchange at the same URL.
+      const response = await this.post("token", {
+        headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ client_id: db.value.client.id,
           ...(db.value.client.secret ? { client_secret: db.value.client.secret } : {}),
           token: tokens.refreshToken ?? tokens.accessToken,
