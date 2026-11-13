@@ -1,7 +1,7 @@
 # Provider regression checks
 
 Run `pnpm check` for the normal credential-free checks. Live provider tests are
-opt-in and use real service resources. Keep credentials in ignored environment files.
+opt-in and use real service resources. Load credentials through managed process environment variables.
 Browserbase must use `verified: true` and managed proxies, including after launch retries.
 
 ## Parallel research to browser
@@ -54,3 +54,24 @@ BELL_LIVE_CONTEXT=1 STAGEHAND_BROWSER=browserbase pnpm exec vitest run tests/bro
 This writes a synthetic example.com cookie, releases the writer, starts a reader with the
 same Context, and checks the restored cookie. It then releases both browsers and deletes the
 temporary Context. Cleanup failures must fail the check rather than silently leaving resources.
+
+## Poppy grocery reads
+
+Build Bell and run its production Next.js and Eve services on loopback with Poppy identity
+configured as described in [Poppy setup](poppy.md). This test reuses those services; it does
+not launch a server or browser. Supply the running server's `BELL_OPERATOR_USERNAME`,
+`BELL_OPERATOR_PASSWORD` (at least 32 bytes), and `BELL_POPPY_CLIENT_ID` through managed
+process environment variables. Set `BELL_POPPY_JWKS_URI` too if the server overrides it.
+
+```sh
+BELL_LIVE_POPPY=1 BELL_TEST_ORIGIN=http://127.0.0.1:4320 pnpm test:poppy:live
+```
+
+The opt-in test makes a real model request: Bell discovers PrijsProfeet, lists its MCP
+reads, searches for Oatly Barista, and fetches one returned product. It checks the four
+successful tool results, an observed price and exact product citation, public identity
+metadata and keys, credential non-disclosure, and session retirement. Prices and offers
+are current provider observations; the test does not assume particular amounts or dates.
+It prints a compact result and exits nonzero on provider, evidence, or cleanup failure.
+No credentials are loaded from repository environment files. Success demonstrates public
+Poppy reads, not human-approved OAuth account access or a hosted Bell deployment.

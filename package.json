@@ -20,6 +20,7 @@
     "lint": "eslint . --max-warnings=0",
     "check": "pnpm test && pnpm typecheck && pnpm lint && pnpm build",
     "baselayer:mint": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/mint-baselayer-credential.mjs",
+    "test:poppy:live": "node scripts/test-poppy-live.mjs",
     "test:retirement:live": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/test-session-retirement.mjs"
   },
   "dependencies": {
