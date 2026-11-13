@@ -67,7 +67,8 @@ function provider() {
       if (rpc.method === "initialize") result = { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "catalog", version: "1" } };
       if (rpc.method === "tools/list") result = { tools: [{ name: "search", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } }] };
       if (rpc.method === "tools/call") result = { content: [], structuredContent: {
-        items: ["milk"], access_token: "private-initial-access", echo: request.headers.get("authorization"), proof: request.headers.get("poppy-session"),
+        items: ["milk"], access_token: request.headers.get("authorization")?.slice("Bearer ".length),
+        echo: request.headers.get("authorization"), proof: request.headers.get("poppy-session"),
       } };
       if (result) return Response.json({ jsonrpc: "2.0", id: rpc.id, result });
     }

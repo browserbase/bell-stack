@@ -23,52 +23,44 @@ export type ReadMcpOptions = {
 
 const MAX_OUTPUT_BYTES = 32 * 1024;
 const MAX_OPERATIONS = 100;
-const AUTH_NAME = /(?:authorization|cookie|password|pass.?code|one.?time.?code|(?:^|[_-])(?:otp|totp)(?:$|[_-])|secret|credential|assertion|private.?key|token|capabilit|api.?key|poppy.?session|dpop)/i;
 const UNSAFE_KEY = /^(?:__proto__|prototype|constructor)$/;
 
-function hasCredentialFields(value: unknown, depth = 0): boolean {
-  if (depth > 20) return true;
-  if (Array.isArray(value)) return value.some((item) => hasCredentialFields(item, depth + 1));
-  return value !== null && typeof value === "object" && Object.entries(value).some(([key, item]) =>
-    AUTH_NAME.test(key) || UNSAFE_KEY.test(key) || hasCredentialFields(item, depth + 1));
-}
-
-function sanitize(value: unknown, secrets: string[], depth = 0): unknown {
+function redactKnownSecrets(value: unknown, secrets: string[], depth = 0): unknown {
   if (depth > 20) return "[depth limit]";
-  if (Array.isArray(value)) return value.map((v) => sanitize(v, secrets, depth + 1));
+  if (Array.isArray(value)) return value.map((v) => redactKnownSecrets(v, secrets, depth + 1));
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(Object.entries(value)
       .filter(([key]) => !UNSAFE_KEY.test(key))
-      .map(([key, v]) => [String(sanitize(key, secrets, depth + 1)), AUTH_NAME.test(key) ? "[redacted]" : sanitize(v, secrets, depth + 1)]));
+      .map(([key, v]) => [String(redactKnownSecrets(key, secrets, depth + 1)), redactKnownSecrets(v, secrets, depth + 1)]));
   }
   if (typeof value !== "string") return value;
   let safe = value;
   for (const secret of secrets) if (secret) safe = safe.replaceAll(secret, "[redacted]");
   if (/^\s*[\[{]/.test(safe)) {
-    try { return JSON.stringify(sanitize(JSON.parse(safe), secrets, depth + 1)); }
+    try { return JSON.stringify(redactKnownSecrets(JSON.parse(safe), secrets, depth + 1)); }
     catch { /* Plain text is also a valid tool result. */ }
   }
-  return safe.replace(/\b(?:Bearer|DPoP)\s+[A-Za-z0-9._~+\/-]+=*/gi, "[redacted authorization]")
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted JWT]");
+  return safe;
 }
 
-function boundedData(data: unknown, secrets: string[]): Pick<PoppyApiResult, "data" | "truncated"> {
-  const safe = sanitize(data, secrets);
-  const encoded = JSON.stringify(safe);
-  if (Buffer.byteLength(encoded) <= MAX_OUTPUT_BYTES - 1024) return { data: safe };
-  return { data: { preview: Buffer.from(encoded).subarray(0, 14 * 1024).toString("utf8") }, truncated: true };
+function boundedResult(result: PoppyApiResult, secrets: string[]): PoppyApiResult {
+  const safe = redactKnownSecrets(result, secrets) as PoppyApiResult;
+  if (Buffer.byteLength(JSON.stringify(safe)) <= MAX_OUTPUT_BYTES - 1024) return safe;
+  return { ...safe, data: { preview: Buffer.from(JSON.stringify(safe.data)).subarray(0, 14 * 1024).toString("utf8") }, truncated: true };
 }
 
 function catalog(resource: string, tools: Tool[], secrets: string[], truncated: boolean): PoppyApiDescription {
-  const operations: PoppyApiOperation[] = [];
-  for (const tool of tools) {
-    const operation = sanitize({
+  const safe = redactKnownSecrets({
+    type: "mcp", resource, operations: tools.map(tool => ({
       id: tool.name, description: tool.description, parameters: tool.inputSchema,
-    }, secrets) as PoppyApiOperation;
-    if (Buffer.byteLength(JSON.stringify({ type: "mcp", resource, operations: [...operations, operation] })) > MAX_OUTPUT_BYTES - 1024) break;
+    })),
+  }, secrets) as PoppyApiDescription;
+  const operations: PoppyApiOperation[] = [];
+  for (const operation of safe.operations) {
+    if (Buffer.byteLength(JSON.stringify({ ...safe, operations: [...operations, operation] })) > MAX_OUTPUT_BYTES - 1024) break;
     operations.push(operation);
   }
-  return { type: "mcp", resource, operations, ...(truncated || operations.length < tools.length ? { truncated: true } : {}) };
+  return { ...safe, operations, ...(truncated || operations.length < tools.length ? { truncated: true } : {}) };
 }
 
 /** Bell's read-only policy and model-output boundary; the SDK owns MCP itself. */
@@ -92,13 +84,12 @@ export async function readMcp({ url, fetch, signal, operation, parameters = {}, 
       names.add(tool.name);
     }
     const readOnly = listing.tools.filter((tool) => tool.annotations?.readOnlyHint === true
-      && tool.annotations.destructiveHint !== true && !duplicates.has(tool.name)
-      && !AUTH_NAME.test(tool.name) && !hasCredentialFields(tool.inputSchema));
+      && tool.annotations.destructiveHint !== true && !duplicates.has(tool.name));
     const allowed = readOnly.slice(0, MAX_OPERATIONS);
     if (operation === undefined) return catalog(url, allowed, secrets, readOnly.length > allowed.length);
     const tool = allowed.find((entry) => entry.name === operation);
     if (!tool) return { error: "invalid_parameters", message: "Choose an advertised, explicitly read-only operation." };
-    if (hasCredentialFields(parameters) || secrets.some((secret) => secret && JSON.stringify(parameters).includes(secret))) {
+    if (secrets.some((secret) => secret && JSON.stringify(parameters).includes(JSON.stringify(secret).slice(1, -1)))) {
       return { error: "invalid_parameters", message: "Do not supply credentials in operation parameters." };
     }
     if (!validator.getValidator(tool.inputSchema as JsonSchemaType)(parameters).valid) {
@@ -106,7 +97,7 @@ export async function readMcp({ url, fetch, signal, operation, parameters = {}, 
     }
     const result = await client.callTool({ name: operation, arguments: parameters }, { signal, timeout: 15_000, toolDefinition: tool });
     if (result.isError) return { error: "api_error", message: "The provider could not complete this read operation." };
-    return { resource: url, operation, ...boundedData(result.structuredContent !== undefined ? result.structuredContent : { content: result.content }, secrets) };
+    return boundedResult({ resource: url, operation, data: result.structuredContent !== undefined ? result.structuredContent : { content: result.content } }, secrets);
   } catch (error) {
     if (error instanceof UnauthorizedError || error instanceof SdkHttpError && error.status === 401) {
       return { error: "auth_required", message: "This API requires account access or an accepted agent identity." };

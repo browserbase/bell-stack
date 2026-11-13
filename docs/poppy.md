@@ -1,7 +1,8 @@
 # Poppy integration
 
-Bell discovers a company's `/.well-known/poppy.json` and calls its explicitly
-read-only MCP tools. Protocol support follows the installed
+Bell discovers a company's `/.well-known/poppy.json` and calls MCP tools the
+provider explicitly marks read-only, excluding tools marked destructive. Protocol
+support follows the installed
 [Poppy SDK](https://github.com/datalayer/personal-agent-protocol).
 Writes, purchases and OpenAPI execution are unsupported.
 
@@ -34,6 +35,15 @@ file and its key together.
 Connecting and disconnecting accounts require approval in Bell. Complete sign-in
 on the provider's website, then return to the conversation. Disconnect before
 changing scopes or reconnecting after interrupted credential updates.
+
+## Limits
+
+Use providers you trust with the requested data. Read-only annotations are provider
+claims, not verified behavior. Authentication stays outside model context; Bell
+filters literal echoes of credentials held for the current request, validates inputs
+and advertised output schemas, and limits result size. Other provider data passes through,
+including unknown or transformed secrets. Bell does not detect PII or prompt
+injection.
 
 ## Verification
 
