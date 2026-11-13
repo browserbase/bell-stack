@@ -55,7 +55,7 @@ This writes a synthetic example.com cookie, releases the writer, starts a reader
 same Context, and checks the restored cookie. It then releases both browsers and deletes the
 temporary Context. Cleanup failures must fail the check rather than silently leaving resources.
 
-## Poppy grocery reads
+## Poppy demo hotel reads
 
 Build Bell and run its production Next.js and Eve services on loopback with Poppy identity
 configured as described in [Poppy setup](poppy.md). This test reuses those services; it does
@@ -67,11 +67,18 @@ process environment variables. Set `BELL_POPPY_JWKS_URI` too if the server overr
 BELL_LIVE_POPPY=1 BELL_TEST_ORIGIN=http://127.0.0.1:4320 pnpm test:poppy:live
 ```
 
-The opt-in test makes a real model request: Bell discovers PrijsProfeet, lists its MCP
-reads, searches for Oatly Barista, and fetches one returned product. It checks the four
-successful tool results, an observed price and exact product citation, public identity
-metadata and keys, credential non-disclosure, and session retirement. Prices and offers
-are current provider observations; the test does not assume particular amounts or dates.
-It prints a compact result and exits nonzero on provider, evidence, or cleanup failure.
-No credentials are loaded from repository environment files. Success demonstrates public
-Poppy reads, not human-approved OAuth account access or a hosted Bell deployment.
+The opt-in test makes a real model request: Bell discovers the public demo provider
+`stays.papsandbox.com`, lists its MCP reads, checks availability for a two-night stay
+starting seven days ahead, and reads rates for one returned room. The published Poppy
+and MCP SDKs handle the protocol requests. The test checks all four successful tool
+results, matching dates and room, a returned rate name and raw total/currency, an exact
+resource citation, public identity metadata and keys, credential non-disclosure, and
+session retirement. It also requires the answer to label the results as demo/sandbox
+data. The raw API totals are not converted because the responses do not declare the
+unit scale; they are demo values, not verified booking quotes.
+
+The script prints a compact result and exits nonzero on provider, evidence, or cleanup
+failure. No credentials are loaded from repository environment files. Success demonstrates
+public Poppy reads through the production model/tool flow. Authenticated account access
+requires separate human-approved verification; this test does not establish it or validate
+a hosted Bell deployment.

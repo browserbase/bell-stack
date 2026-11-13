@@ -1,39 +1,79 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { generatePairwiseUserId, PapSession, SecretValue, type AuthorizationStateStore, type PapSessionJson, type TokenStore } from "@datalayer/personal-agent-protocol";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { seal, unseal } from "../encrypted-record";
 
-const secret = z.string().min(1).max(65_536);
-const timestamp = z.number().finite().nonnegative();
-const id = z.string().regex(/^[A-Za-z0-9_-]{1,256}$/);
-const scopes = z.array(z.string().regex(/^[\x21\x23-\x5b\x5d-\x7e]+$/)).min(1).max(1024);
-const httpsUrl = z.string().max(8192).refine(value => {
-  try { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password && !url.hash; }
-  catch { return false; }
-});
-const grantSchema = z.object({
-  accessToken: secret, refreshToken: secret, expiresAt: timestamp, scopes,
-  resource: httpsUrl.optional(), status: z.enum(["active", "uncertain", "revoking"]),
-}).strict();
-const deviceSchema = z.object({
-  deviceCode: secret, userCode: z.string().min(1).max(1024), verificationUri: httpsUrl,
-  expiresAt: timestamp, interval: z.number().int().positive(), nextPollAt: timestamp, scopes,
-  resource: httpsUrl.optional(), status: z.enum(["pending", "polling", "uncertain"]),
-}).strict();
+const httpsUrl = z.string().url().refine(value => new URL(value).protocol === "https:");
 const stateSchema = z.object({
-  userId: id, sessions: z.record(z.string().min(1).max(2048), id),
-  grant: grantSchema.optional(), device: deviceSchema.optional(), retiredRefreshTokens: z.array(secret).optional(),
+  userId: z.string().min(1),
+  sessions: z.record(z.string(), z.custom<PapSessionJson>(value => {
+    try { PapSession.fromJson(value as PapSessionJson); return true; } catch { return false; }
+  })),
+  tokens: z.record(z.string(), z.string().min(1)),
+  authorization: z.record(z.string(), z.object({ expiresAt: z.number(), value: z.unknown() })),
+  grant: z.object({ reference: z.string(), scopes: z.array(z.string()) }).optional(),
+  device: z.object({ reference: z.string(), userCode: z.string(), verificationUri: httpsUrl,
+    expiresAt: z.number(), scopes: z.array(z.string()) }).optional(),
+  blocked: z.boolean().optional(),
 }).strict();
 const recordSchema = z.object({
   clientId: httpsUrl, owner: z.string().min(1).max(2048), company: httpsUrl, state: stateSchema,
 }).strict();
 const databaseSchema = z.object({ records: z.record(z.string(), recordSchema) }).strict();
-const envelopeSchema = z.object({ version: z.literal(1), ciphertext: z.string().min(1) }).strict();
+const envelopeSchema = z.object({ version: z.literal(2), ciphertext: z.string().min(1) }).strict();
 
-export type PoppyGrant = z.infer<typeof grantSchema>;
-export type PoppyDevice = z.infer<typeof deviceSchema>;
-export type PoppyCompanyState = Omit<z.infer<typeof stateSchema>, "userId"> & { readonly userId: string };
+export type PoppyCompanyState = z.infer<typeof stateSchema>;
+export interface PoppySdkStores {
+  tokens: TokenStore;
+  authorization: AuthorizationStateStore;
+}
+
+// SDK authorization state is opaque, but its Date/SecretValue instances must survive
+// encrypted JSON storage. Tag every container to avoid interpreting provider fields as tags.
+function encode(value: unknown): unknown {
+  if (value instanceof SecretValue) return ["secret", value.reveal()];
+  if (value instanceof Date) return ["date", value.toISOString()];
+  if (value === undefined) return ["undefined"];
+  if (Array.isArray(value)) return ["array", value.map(encode)];
+  if (value && typeof value === "object") return ["object", Object.entries(value).map(([key, item]) => [key, encode(item)])];
+  return value;
+}
+function decode(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  const [kind, body] = value;
+  if (kind === "secret") return new SecretValue(body);
+  if (kind === "date") return new Date(body);
+  if (kind === "undefined") return undefined;
+  if (kind === "array") return (body as unknown[]).map(decode);
+  if (kind === "object") return Object.fromEntries((body as [string, unknown][]).map(([key, item]) => [key, decode(item)]));
+  throw new Error("Invalid encrypted SDK state.");
+}
+
+/** Each adapter is scoped to a locked, authenticated owner/company record. */
+export function sdkStores(state: PoppyCompanyState, save: () => Promise<void>): PoppySdkStores {
+  return {
+    tokens: {
+      async put(reference, token) { state.tokens[reference] = token.reveal(); await save(); },
+      async get(reference) { return Object.hasOwn(state.tokens, reference) ? new SecretValue(state.tokens[reference]) : undefined; },
+      async delete(reference) { delete state.tokens[reference]; await save(); },
+    },
+    authorization: {
+      async put(reference, value, { expiresAt }) {
+        state.authorization[reference] = { value: encode(value), expiresAt: expiresAt.getTime() };
+        await save();
+      },
+      async take(reference) {
+        const record = Object.hasOwn(state.authorization, reference) ? state.authorization[reference] : undefined;
+        delete state.authorization[reference];
+        await save();
+        return record && record.expiresAt > Date.now() ? decode(record.value) : undefined;
+      },
+    },
+  };
+}
+
 export interface PoppyStoreConfig { path?: string; encryptionKey?: Buffer; clientId?: string }
 type Database = z.infer<typeof databaseSchema>;
 
@@ -65,7 +105,7 @@ export class PoppyStore {
       const recordKey = JSON.stringify([owner, company]);
       const record = database.records[recordKey] ?? {
         clientId: this.#clientId, owner, company,
-        state: { userId: randomBytes(32).toString("base64url"), sessions: {} },
+        state: { userId: generatePairwiseUserId(), sessions: {}, tokens: {}, authorization: {} },
       };
       database.records[recordKey] = record;
       const userId = record.state.userId;
@@ -77,7 +117,7 @@ export class PoppyStore {
         try {
           if (record.state.userId !== userId) throw new Error();
           const checked = databaseSchema.parse(database);
-          serialized = JSON.stringify({ version: 1, ciphertext: seal(checked, this.#key, this.context()) });
+          serialized = JSON.stringify({ version: 2, ciphertext: seal(checked, this.#key, this.context()) });
         } catch { return Promise.reject(new Error("Poppy state is invalid; refusing to save it.")); }
         writes = writes.then(() => this.write(serialized));
         return writes;
@@ -97,7 +137,7 @@ export class PoppyStore {
     finally { if (pending.get(this.#path) === tail) pending.delete(this.#path); }
   }
 
-  private context(): string { return `poppy:store:${this.#clientId}`; }
+  private context(): string { return `poppy:sdk-store:${this.#clientId}`; }
 
   private async read(): Promise<Database> {
     let contents: string;
