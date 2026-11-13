@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { generatePairwiseUserId, PapSession, SecretValue, type AuthorizationStateStore, type PapSessionJson, type TokenStore } from "@datalayer/personal-agent-protocol";
+import { generatePairwiseUserId, InProcessRefreshTokenLock, PapSession, SecretValue, type AuthorizationStateStore, type PapSessionJson, type TokenStore } from "@datalayer/personal-agent-protocol";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -77,8 +77,10 @@ export function sdkStores(state: PoppyCompanyState, save: () => Promise<void>): 
 export interface PoppyStoreConfig { path?: string; encryptionKey?: Buffer; clientId?: string }
 type Database = z.infer<typeof databaseSchema>;
 
-// This store supports one Bell process. Every instance in that process shares the file's lock.
-const pending = new Map<string, Promise<void>>();
+// This store supports one Bell process. Account work may wait on providers; the
+// shared file lock covers only reading and atomically merging a checkpoint.
+const accounts = new InProcessRefreshTokenLock();
+const files = new InProcessRefreshTokenLock();
 
 export class PoppyStore {
   readonly #path: string;
@@ -100,26 +102,27 @@ export class PoppyStore {
   async withCompany<T>(owner: string, company: string, operation: (state: PoppyCompanyState, save: () => Promise<void>) => Promise<T>): Promise<T> {
     if (!z.string().min(1).max(2048).safeParse(owner).success || !httpsUrl.safeParse(company).success)
       throw new Error("Poppy state requires an authenticated owner and company identifier.");
-    const work = (pending.get(this.#path) ?? Promise.resolve()).then(async () => {
-      const database = await this.read();
-      const recordKey = JSON.stringify([owner, company]);
-      const record = database.records[recordKey] ?? {
+    const recordKey = JSON.stringify([owner, company]);
+    return accounts.hold(JSON.stringify([this.#path, owner, company]), async () => {
+      const record = await files.hold(this.#path, async () => (await this.read()).records[recordKey] ?? {
         clientId: this.#clientId, owner, company,
         state: { userId: generatePairwiseUserId(), sessions: {}, tokens: {}, authorization: {} },
-      };
-      database.records[recordKey] = record;
+      });
       const userId = record.state.userId;
       let active = true;
       let writes = Promise.resolve();
       const save = (): Promise<void> => {
         if (!active) return Promise.reject(new Error("Poppy state checkpoint is outside its lock."));
-        let serialized: string;
+        let checkpoint: typeof record;
         try {
           if (record.state.userId !== userId) throw new Error();
-          const checked = databaseSchema.parse(database);
-          serialized = JSON.stringify({ version: 2, ciphertext: seal(checked, this.#key, this.context()) });
+          checkpoint = structuredClone(recordSchema.parse(record));
         } catch { return Promise.reject(new Error("Poppy state is invalid; refusing to save it.")); }
-        writes = writes.then(() => this.write(serialized));
+        writes = writes.then(() => files.hold(this.#path, async () => {
+          const database = await this.read();
+          database.records[recordKey] = checkpoint;
+          await this.write(JSON.stringify({ version: 2, ciphertext: seal(database, this.#key, this.context()) }));
+        }));
         return writes;
       };
       try {
@@ -131,10 +134,6 @@ export class PoppyStore {
         await writes;
       }
     });
-    const tail = work.then(() => undefined, () => undefined);
-    pending.set(this.#path, tail);
-    try { return await work; }
-    finally { if (pending.get(this.#path) === tail) pending.delete(this.#path); }
   }
 
   private context(): string { return `poppy:sdk-store:${this.#clientId}`; }

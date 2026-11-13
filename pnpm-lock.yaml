@@ -8,6 +8,7 @@ overrides:
   undici@>=7 <7.30.1: 7.30.1
   undici@>=8 <8.12.2: 8.12.2
   zod@>=4 <4.6.6: 4.6.7
+  '@datalayer/reactor@1.3.7>@toon-format/toon': 2.3.1
 
 importers:
 
@@ -880,8 +881,8 @@ packages:
   '@swc/helpers@0.5.23':
     resolution: {integrity: sha512-5lSsMOTXURePglDfvuAQUqkGek9Hg2kksOYay2m0+XR++b2NWYL/4sWyuvVBIs8oKnJaxkdi9whaL/sqN13afw==}
 
-  '@toon-format/toon@1.4.0':
-    resolution: {integrity: sha512-bjdhhIPjnX2oVk+pKy/nD3bwuESDLX/5fwW0TxwpV7Q4PVNkiRSv1S0sPeuy9TI4PfAlulow1HShdmMTnYvoLg==}
+  '@toon-format/toon@2.3.1':
+    resolution: {integrity: sha512-sWqEMeAJGMda9qRrfPKrX3C4c33CO9SJuvJzzrcBEn5sbDB+k6pSLkDsfN0rVnLQwR97MV3sDgVbcxQNsq8xVw==}
 
   '@tybys/wasm-util@0.10.4':
     resolution: {integrity: sha512-W3c4gRigFS0T/Ma4qIYF3GDAc5AQdHb1yL5znJT1Zv1YaD9Kitx656wBjvr19qbiosmZT8lWDM5BEMynUqX65A==}
@@ -3013,7 +3014,7 @@ snapshots:
 
   '@datalayer/reactor@1.3.7(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.7)':
     dependencies:
-      '@toon-format/toon': 1.4.0
+      '@toon-format/toon': 2.3.1
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
       zod-to-json-schema: 3.25.2(zod@4.6.7)
@@ -3472,7 +3473,7 @@ snapshots:
     dependencies:
       tslib: 2.8.1
 
-  '@toon-format/toon@1.4.0': {}
+  '@toon-format/toon@2.3.1': {}
 
   '@tybys/wasm-util@0.10.4':
     dependencies:

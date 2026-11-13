@@ -68,6 +68,54 @@ describe("Poppy application storage", () => {
     });
   });
 
+  it("lets other accounts checkpoint while one account waits and merges all updates", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const first = store().withCompany(owner, company, async (state, save) => {
+      state.tokens.first = "before-provider-wait";
+      await save();
+      entered.resolve();
+      await release.promise;
+      state.tokens.first = "after-provider-wait";
+      await save();
+    });
+    await entered.promise;
+    let sameAccountEntered = false;
+    const sameAccount = new PoppyStore({ path: path.relative(process.cwd(), file), encryptionKey: key, clientId })
+      .withCompany(owner, company, async state => {
+        sameAccountEntered = true;
+        expect(state.tokens.first).toBe("after-provider-wait");
+        state.tokens.second = "same-account-update";
+      });
+    const others = [["other-owner", company], [owner, "https://other.company.example"]];
+    const unrelated = Promise.all(others.map(([otherOwner, otherCompany]) => store().withCompany(otherOwner, otherCompany, async (state, save) => {
+      state.tokens.first = "independent-checkpoint";
+      await save();
+      state.tokens.second = "independent-completion";
+      await save();
+    })));
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([unrelated, new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Unrelated accounts waited for the held provider operation.")), 2000);
+      })]);
+      expect(sameAccountEntered).toBe(false);
+    } finally {
+      clearTimeout(timeout);
+      release.resolve();
+      await Promise.all([first, sameAccount, unrelated]);
+    }
+    expect(sameAccountEntered).toBe(true);
+    await store().withCompany(owner, company, async state => {
+      expect(state.tokens).toEqual({ first: "after-provider-wait", second: "same-account-update" });
+    });
+    for (const [otherOwner, otherCompany] of others) {
+      await store().withCompany(otherOwner, otherCompany, async state => {
+        expect(state.tokens).toEqual({ first: "independent-checkpoint", second: "independent-completion" });
+      });
+    }
+  });
+
   it("serializes mutations across store instances and retains durable recovery checkpoints", async () => {
     const stores = [store(), new PoppyStore({ path: path.relative(process.cwd(), file), encryptionKey: key, clientId })];
     const ids = await Promise.all(Array.from({ length: 12 }, (_, index) => stores[index % 2].withCompany(owner, company, async state => {
@@ -116,13 +164,23 @@ describe("Poppy application storage", () => {
     }
   });
 
+  it("revalidates the shared file before merging a checkpoint", async () => {
+    await store().withCompany(owner, company, async () => {});
+    await expect(store().withCompany(owner, company, async (state, save) => {
+      state.tokens.pending = "must-not-overwrite-corrupt-data";
+      await writeFile(file, "{broken");
+      await save();
+    })).rejects.toThrow("refusing to overwrite");
+    expect(await readFile(file, "utf8")).toBe("{broken");
+  });
+
   it("does not replace valid data after invalid state or an I/O failure", async () => {
     await store().withCompany(owner, company, async () => {});
     const original = await readFile(file, "utf8");
     await expect(store().withCompany(owner, company, async state => { state.userId = "changed"; })).rejects.toThrow("refusing to save");
     expect(await readFile(file, "utf8")).toBe(original);
     await rm(file);
-    await expect(store().withCompany(owner, company, async () => { await mkdir(file); })).rejects.toThrow("could not be saved");
+    await expect(store().withCompany(owner, company, async () => { await mkdir(file); })).rejects.toThrow("could not be read");
     expect(await readdir(directory)).toEqual(["poppy.enc.json"]);
   });
 });

@@ -160,6 +160,30 @@ describe("Bell's SDK-backed Poppy accounts", () => {
     expect(await client().disconnect("owner-a", company)).toMatchObject({ status: "disconnected" });
   });
 
+  it("starts fresh sign-in after failed refresh recovery without refreshing or inspecting the old account", async () => {
+    await signedIn();
+    remote.state.failRefresh = true;
+    await expect(client().read("owner-a", "conversation", company, 0, "search", {})).rejects.toThrow("Poppy SDK request failed");
+
+    const blockedAt = remote.requests.length;
+    await expect(client().connect("owner-a", "conversation", company, 0, [scope])).rejects.toThrow("Disconnect before starting another sign-in");
+    expect(remote.requests.slice(blockedAt).filter(entry => [mcp, `${issuer}/token`, `${issuer}/device`].includes(entry.url))).toEqual([]);
+
+    await client().disconnect("owner-a", company);
+    const reconnectAt = remote.requests.length;
+    expect(await client().connect("owner-a", "conversation", company, 0, [scope])).toMatchObject({ status: "sign_in_required" });
+    vi.setSystemTime(Date.now() + 2000);
+    expect(await client().status("owner-a", company)).toMatchObject({ status: "connected", scopes: [scope] });
+
+    const reconnect = remote.requests.slice(reconnectAt);
+    expect(reconnect.filter(entry => entry.url === `${issuer}/device`)).toHaveLength(1);
+    expect(reconnect.filter(entry => entry.url === mcp)).toEqual([]);
+    const tokenRequests = reconnect.filter(entry => entry.url === `${issuer}/token`);
+    expect(tokenRequests).toHaveLength(1);
+    expect(new URLSearchParams(tokenRequests[0].body).get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:device_code");
+    expect(remote.state.failRefresh).toBe(true);
+  });
+
   it("reports the installed SDK's unsupported version without a local compatibility implementation", async () => {
     remote.state.version = "0.3";
     await expect(client().discover(company)).rejects.toThrow("unsupported by the installed SDK");
