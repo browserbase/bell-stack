@@ -23,7 +23,7 @@ export type ReadMcpOptions = {
 
 const MAX_OUTPUT_BYTES = 32 * 1024;
 const MAX_OPERATIONS = 100;
-const AUTH_NAME = /(?:authorization|cookie|password|secret|credential|assertion|private.?key|token|capabilit|api.?key|poppy.?session|dpop)/i;
+const AUTH_NAME = /(?:authorization|cookie|password|pass.?code|one.?time.?code|(?:^|[_-])(?:otp|totp)(?:$|[_-])|secret|credential|assertion|private.?key|token|capabilit|api.?key|poppy.?session|dpop)/i;
 const UNSAFE_KEY = /^(?:__proto__|prototype|constructor)$/;
 
 function hasCredentialFields(value: unknown, depth = 0): boolean {
@@ -92,7 +92,8 @@ export async function readMcp({ url, fetch, signal, operation, parameters = {}, 
       names.add(tool.name);
     }
     const readOnly = listing.tools.filter((tool) => tool.annotations?.readOnlyHint === true
-      && tool.annotations.destructiveHint !== true && !duplicates.has(tool.name) && !hasCredentialFields(tool.inputSchema));
+      && tool.annotations.destructiveHint !== true && !duplicates.has(tool.name)
+      && !AUTH_NAME.test(tool.name) && !hasCredentialFields(tool.inputSchema));
     const allowed = readOnly.slice(0, MAX_OPERATIONS);
     if (operation === undefined) return catalog(url, allowed, secrets, readOnly.length > allowed.length);
     const tool = allowed.find((entry) => entry.name === operation);

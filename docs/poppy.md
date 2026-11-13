@@ -73,8 +73,8 @@ replicas or serverless deployment. Back up the encrypted file and key together.
 The Poppy SDK supplies DNS-pinned public HTTPS networking. Bell adds request deadlines,
 size limits and output redaction. MCP tools must explicitly advertise
 `readOnlyHint: true` without `destructiveHint: true`; this is the provider's assertion,
-not an independent guarantee about its implementation. Provider content remains
-untrusted data. Results are bounded and mark truncated previews explicitly.
+not an independent guarantee about its implementation. Bell excludes credential-named
+tools and credential parameters. Provider content remains untrusted data. Results are bounded and mark truncated previews explicitly.
 
 ## Verification
 

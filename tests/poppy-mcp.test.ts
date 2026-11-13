@@ -42,15 +42,19 @@ describe("Bell's MCP adapter", () => {
     expect(http.calls).not.toContain("tools/call");
   });
 
-  it("excludes tools that request bearer capabilities or other model-supplied credentials", async () => {
-    const protectedTools = ["claim_token", "capability", "sessionToken"].map((field) => ({
-      ...search, name: `read_with_${field}`, inputSchema: { type: "object" as const, properties: { [field]: { type: "string" } } },
+  it("excludes credential getters and tools requesting model-supplied credentials", async () => {
+    const protectedTools = ["claim_token", "capability", "sessionToken"].map((field, index) => ({
+      ...search, name: `lookup_${index}`, inputSchema: { type: "object" as const, properties: { [field]: { type: "string" } } },
     }));
-    const http = fixture([[search, ...protectedTools]]);
+    const credentialGetters = ["get_passcode", "get_one_time_code", "get_otp"].map((name) => ({
+      ...search, name, inputSchema: { type: "object" as const, properties: {} },
+    }));
+    const http = fixture([[search, ...protectedTools, ...credentialGetters]]);
     const catalog = await readMcp({ url, fetch: http.fetch });
     expect("operations" in catalog && catalog.operations.map((tool) => tool.id)).toEqual(["search"]);
-    expect(await readMcp({ url, fetch: http.fetch, operation: "read_with_claim_token", parameters: { claim_token: "private" } }))
-      .toMatchObject({ error: "invalid_parameters" });
+    for (const operation of ["lookup_0", ...credentialGetters.map(tool => tool.name)]) {
+      expect(await readMcp({ url, fetch: http.fetch, operation, parameters: {} })).toMatchObject({ error: "invalid_parameters" });
+    }
     expect(http.calls).not.toContain("tools/call");
   });
 
@@ -67,12 +71,14 @@ describe("Bell's MCP adapter", () => {
     const http = fixture(undefined, {
       items: ["milk"], access_token: "private-token", message: "known-private-value",
       keyed: { "known-private-value": { [proof]: "visible result" } },
-      nested: JSON.stringify({ refresh_token: "private-refresh", proof, [proof]: { "known-private-value": "visible result" } }),
+      account: { passcode: "private-passcode", one_time_code: "private-one-time-code", otp: "private-otp" },
+      nested: JSON.stringify({ refresh_token: "private-refresh", account: { passcode: "private-passcode" }, proof, [proof]: { "known-private-value": "visible result" } }),
     });
     const result = await readMcp({ url, fetch: http.fetch, operation: "search", parameters: { query: "milk" }, secrets: ["known-private-value"] });
     expect(result).toMatchObject({ resource: url, operation: "search", data: { items: ["milk"], access_token: "[redacted]", message: "[redacted]" } });
     expect(result).toMatchObject({ data: { keyed: { "[redacted]": { "[redacted JWT]": "visible result" } } } });
-    expect(JSON.stringify(result)).not.toMatch(/private-token|private-refresh|known-private-value|eyJ/);
+    expect(result).toMatchObject({ data: { account: { passcode: "[redacted]", one_time_code: "[redacted]", otp: "[redacted]" } } });
+    expect(JSON.stringify(result)).not.toMatch(/private-token|private-refresh|private-passcode|private-one-time-code|private-otp|known-private-value|eyJ/);
     expect(http.calls.filter((method) => method === "tools/call")).toHaveLength(1);
   });
 
