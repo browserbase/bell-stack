@@ -6,6 +6,7 @@ import { MessageThread } from "./phone/message-thread";
 import { MessageComposer } from "./phone/message-composer";
 import { WorkspaceHeader } from "./workspace/workspace-header";
 import { BrowserPreview } from "./workspace/browser-preview";
+import { WebMcpBridge } from "./webmcp-bridge";
 
 export default function BellWorkspace({
   sessionId,
@@ -17,6 +18,7 @@ export default function BellWorkspace({
   const conversation = useBellConversation(sessionId);
   return (
     <>
+      <WebMcpBridge />
       <a href="#message" className="skip-link">
         Skip to message
       </a>
@@ -47,6 +49,9 @@ export default function BellWorkspace({
             </PhoneShell>
           </div>
           <div className="min-w-0 lg:pt-1">
+            <p className="mb-5 max-w-lg text-sm leading-6 text-text-secondary">
+              Ask Bell to research a topic, plan a trip, or find a product.
+            </p>
             <BrowserPreview
               preview={conversation.preview}
               busy={conversation.busy}

@@ -17,6 +17,9 @@ export function WorkspaceHeader({
           <h1 className="font-sans text-[27px] leading-none tracking-tight">
             Bell
           </h1>
+          <span className="hidden border-l border-border-solid pl-3 text-sm text-text-secondary sm:block">
+            Personal assistant stack
+          </span>
         </div>
         <Button
           onClick={onNewConversation}

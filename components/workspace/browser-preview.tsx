@@ -70,8 +70,15 @@ export function BrowserPreview({
           </div>
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center">
-            <Icon name="monitor" className="mb-3 size-7 text-text-tertiary" />
-            <p className="text-sm text-text-secondary">No screenshot yet</p>
+            <Icon name="monitor" className="mb-4 size-7 text-text-tertiary" />
+            <h3 className="text-lg font-medium tracking-tight">
+              See what Bell sees.
+            </h3>
+            <p className="mt-2 max-w-[290px] text-sm leading-6 text-text-secondary">
+              {preview.url
+                ? "Ask Bell to take a screenshot of this page."
+                : "Ask Bell to open a page and take a screenshot."}
+            </p>
             {!preview.url && (
               <Button
                 className="secondary-button mt-4"

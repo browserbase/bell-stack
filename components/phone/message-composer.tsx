@@ -46,6 +46,7 @@ export function MessageComposer({
         {busy ? (
           <Button
             aria-label="Stop request"
+            data-agent-confirm="Stops Bell's current request"
             onClick={onStop}
             className="phone-send bg-[#646469]! text-white"
           >
@@ -55,7 +56,7 @@ export function MessageComposer({
           <Button
             type="submit"
             aria-label="Send message"
-            data-agent-confirm="Sends this message to Bell"
+            data-agent-confirm={`Sends this message to Bell: ${value.trim()}`}
             disabled={waiting || !value.trim()}
             className="phone-send bg-[#0071eb]! text-white"
           >

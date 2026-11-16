@@ -24,12 +24,19 @@ pnpm install --frozen-lockfile
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` or `AI_GATEWAY_API_KEY`, plus `BROWSERBASE_API_KEY`, in `.env`. When a Gateway key is set, `BELL_MODEL` routes through AI Gateway. For ordinary browsing, set `BELL_DEMO_URL` to your target website.
+Set `OPENAI_API_KEY` and `BROWSERBASE_API_KEY` in `.env`. For ordinary browsing, set `BELL_DEMO_URL` to your target website.
 Set `PARALLEL_API_KEY` to enable public-web research. Keep research inputs public; use the browser for authenticated pages and actions.
 
 ```sh
 pnpm dev
 ```
+
+## WebMCP
+
+In browsers that support WebMCP, Bell exposes ui-sdk's `snapshot`, `query`, and
+`act` tools. A browser agent can discover controls and edit the message draft.
+Sending messages, replying to Bell, starting a new conversation, opening the demo,
+and stopping a request require confirmation. Browsers without WebMCP work normally.
 
 
 ## Start here
