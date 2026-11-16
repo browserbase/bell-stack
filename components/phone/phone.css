@@ -208,6 +208,42 @@
     right: -10px;
     border-bottom-left-radius: 10px;
   }
+  .connection-prompt {
+    border: 1px solid #c8c8ce;
+    border-radius: 12px;
+    background: #fafafa;
+    padding: 11px;
+    font-size: 13px;
+  }
+  .connection-prompt:not(:first-child) {
+    margin-top: 10px;
+  }
+  .connection-action {
+    display: flex;
+    min-height: 36px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 10px;
+    border: 1px solid #0071eb;
+    border-radius: 9px;
+    background: #0071eb;
+    padding: 7px 10px;
+    color: white;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: center;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+  .connection-action:hover {
+    border-color: #0061cb;
+    background: #0061cb;
+  }
+  .connection-action:focus-visible {
+    outline: 2px solid #0071eb;
+    outline-offset: 3px;
+  }
   .approval-option {
     height: auto;
     min-height: 32px;
