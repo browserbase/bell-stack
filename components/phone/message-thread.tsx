@@ -14,6 +14,8 @@ type Props = {
   messages: readonly EveMessage[];
   pending: readonly EveMessageInputRequest[];
   onRespond: (response: InputResponse) => Promise<void>;
+  onNewConversation: () => Promise<void>;
+  waiting: boolean;
   busy: boolean;
   error: string;
   status: string;
@@ -23,6 +25,8 @@ export function MessageThread({
   messages,
   pending,
   onRespond,
+  onNewConversation,
+  waiting,
   busy,
   error,
   status,
@@ -30,7 +34,10 @@ export function MessageThread({
   const visible = messages.filter(
     (message) =>
       (message.role === "user" || message.role === "assistant") &&
-      message.parts.some((part) => part.type === "text" && part.text),
+      message.parts.some(
+        (part) =>
+          (part.type === "text" && part.text) || part.type === "authorization",
+      ),
   );
   return (
     <ScrollArea
@@ -68,7 +75,33 @@ export function MessageThread({
                         {part.text}
                       </p>,
                     ]
-                  : [],
+                  : part.type === "authorization"
+                    ? [
+                        <section key={index} className="not-first:mt-2">
+                          {part.state === "completed" ? (
+                            <p>
+                              {part.outcome === "authorized"
+                                ? `${part.displayName} connected.`
+                                : `${part.displayName} authorization ${part.outcome}.`}
+                            </p>
+                          ) : (
+                            <>
+                              <p>{part.description}</p>
+                              {part.authorization?.url && (
+                                <a
+                                  className="underline"
+                                  href={part.authorization.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  Connect {part.displayName}
+                                </a>
+                              )}
+                            </>
+                          )}
+                        </section>,
+                      ]
+                    : [],
               )}
             </article>
           ))}
@@ -94,7 +127,15 @@ export function MessageThread({
               role="alert"
               className="mt-3 rounded-xl bg-red-50 p-3 text-[12px] leading-5 text-error"
             >
-              {error}
+              {error}{" "}
+              <button
+                type="button"
+                className="underline disabled:opacity-50"
+                disabled={waiting}
+                onClick={() => void onNewConversation()}
+              >
+                Start a fresh conversation
+              </button>
             </p>
           )}
           <p

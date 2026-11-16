@@ -34,6 +34,8 @@ export default function BellWorkspace({
                 messages={conversation.messages}
                 pending={conversation.pending}
                 onRespond={conversation.respond}
+                onNewConversation={conversation.newConversation}
+                waiting={conversation.waiting}
                 busy={conversation.busy}
                 error={conversation.error}
                 status={conversation.status}

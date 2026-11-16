@@ -46,7 +46,7 @@ export function useBellConversation(sessionId?: string) {
     } catch {
       setInput((draft) => draft || text);
       setError(
-        "Your message couldn't be sent. Check your connection and try again.",
+        "Your message couldn't be sent. If the development server restarted, start a fresh conversation.",
       );
     } finally {
       sending.current = false;
@@ -58,9 +58,10 @@ export function useBellConversation(sessionId?: string) {
     setRetiring(true);
     setError("");
     try {
-      if (agent.session)
+      const activeSessionId = agent.session?.sessionId ?? sessionId;
+      if (activeSessionId)
         await new Client({ host: "" }).sessions
-          .attach(agent.session.sessionId)
+          .attach(activeSessionId)
           .reset();
       agent.reset();
       setInput("");
@@ -102,7 +103,7 @@ export function useBellConversation(sessionId?: string) {
     error:
       error ||
       (agent.error
-        ? "Bell couldn't finish this request. Please try again."
+        ? "Bell couldn't finish this request. If the development server restarted, start a fresh conversation."
         : ""),
     send,
     respond,
