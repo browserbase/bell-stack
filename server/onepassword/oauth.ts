@@ -1,8 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { Pool } from "pg";
 import { ConnectionAuthorizationRequiredError, type ConnectionPrincipal } from "eve/connections";
 import { z } from "zod";
 import { hash } from "../encrypted-record";
+import { createPool } from "../postgres";
 import { configuration, failed, frameworkCallback, integrationIdentity, ownerOf, scopes, type Config } from "./config";
 import { OnePasswordStore, type ConnectionState, type OAuthAttempt, type RecordStore, type Tokens } from "./store";
 
@@ -183,9 +183,7 @@ let singleton: OnePasswordOAuth | undefined;
 export function getOnePassword(): OnePasswordOAuth {
   if (!singleton) {
     const config = configuration();
-    const pool = new Pool({ connectionString: config.databaseUrl, max: 5, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 30_000 });
-    pool.on("error", () => console.error("1Password database connection failed."));
-    singleton = new OnePasswordOAuth(config, new OnePasswordStore(pool, config.encryptionKey));
+    singleton = new OnePasswordOAuth(config, new OnePasswordStore(createPool(config.databaseUrl, "1Password"), config.encryptionKey));
   }
   return singleton;
 }

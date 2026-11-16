@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { CaptchaTransition } from "../../lib/browser/captcha";
 import { BrowserSession } from "../../server/browser/browser-session.js";
 import type { ConversationState } from "../../server/browser/types.js";
 
@@ -14,13 +15,15 @@ describe("opt-in real Browserbase CAPTCHA solve", () => {
           traces: [],
           browser: { provider: "not-started", status: "idle" },
         },
-        session = new BrowserSession(state);
+        transitions: CaptchaTransition[] = [],
+        session = new BrowserSession(state, {
+          onCaptchaTransition: (transition) => transitions.push(transition),
+        });
       try {
         await session.run([
           { action: "goto", url: "https://google.com/recaptcha/api2/demo" },
           { action: "wait", milliseconds: 2_000 },
         ]);
-        const transitions = session.drainCaptchaTransitions();
         expect(transitions.map((event) => event.type)).toEqual(["started", "finished"]);
 
         await session.run([

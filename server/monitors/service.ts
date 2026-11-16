@@ -33,8 +33,7 @@ export class MonitorService {
         await this.store.bind(watch.id, remote.monitor_id, remote.status === "cancelled", remote.frequency);
       } catch (error) {
         const rejected = error instanceof ProviderError && [400,401,403,422].includes(error.status);
-        await this.store.pool.query("UPDATE bell_monitors SET status=$2 WHERE id=$1 AND status='dispatched'", [watch.id, rejected ? "failed" : "uncertain"]);
-        await this.store.pool.query("UPDATE bell_monitor_jobs SET next_at=now() WHERE id=$1", [`reconcile:${watch.id}`]);
+        await this.store.markDispatchUnresolved(watch.id, rejected ? "failed" : "uncertain");
       }
     }
     const result = await this.store.get(watch.id);
@@ -79,10 +78,7 @@ export class MonitorService {
     const parsed = new Webhook(required("PARALLEL_WEBHOOK_SECRET")).verify(body, headers);
     const event = callbackSchema.parse(parsed), id = headers["webhook-id"];
     if (!id || id.length > 256) throw new Error("Invalid webhook identity");
-    await this.store.transaction(async client => {
-      const inserted = await client.query("INSERT INTO bell_monitor_inbox(id,payload) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id", [id, event]);
-      if (inserted.rowCount) await this.store.enqueue("inbox", `inbox:${id}`, null, { id }, client);
-    });
+    await this.store.acceptInbox(id, event);
   }
   async process() {
     const deadline = Date.now() + this.budget;
@@ -108,13 +104,13 @@ export class MonitorService {
   /** Resolves to a saved payload when the work budget ran out mid-scan, so the next run resumes from there. */
   private async run(job: Job, deadline: number): Promise<Record<string, unknown> | undefined> {
     if (job.kind === "inbox") {
-      const payload = (await this.store.pool.query("SELECT payload FROM bell_monitor_inbox WHERE id=$1", [job.payload.id])).rows[0]?.payload;
+      const payload = await this.store.inboxPayload(job.payload.id);
       const event = callbackSchema.parse(payload);
-      let watch = (await this.store.pool.query<Watch>("SELECT * FROM bell_monitors WHERE remote_id=$1", [event.data.monitor_id])).rows[0];
+      let watch = await this.store.findByRemoteId(event.data.monitor_id);
       if (!watch) {
         const id = event.data.metadata?.bell_watch_id;
         if (!id || !z.string().uuid().safeParse(id).success) return;
-        watch = (await this.store.pool.query<Watch>("SELECT * FROM bell_monitors WHERE id=$1 AND status IN ('dispatched','uncertain','cancel_pending')", [id])).rows[0];
+        watch = await this.store.findPendingIdentity(id);
         if (!watch) return;
         // Early callbacks wait for API-backed reconciliation; metadata is not ownership proof.
         throw new Error("Monitor identity not reconciled yet");
@@ -137,13 +133,13 @@ export class MonitorService {
         cursor = result.next_cursor ?? undefined;
         if (!cursor) break;
       }
-      await this.store.pool.query("UPDATE bell_monitor_jobs SET payload=$3 WHERE id=$1 AND lease_token=$2", [job.id, job.lease_token, cursor ? { cursor } : {}]);
+      await this.store.saveLeasePayload(job.id, job.lease_token, cursor ? { cursor } : {});
       throw new Error("Creation remains uncertain");
     }
     if (job.kind === "cancel") {
       if (!watch.remote_id) throw new Error("Creation unresolved");
       await this.provider.cancel(watch.remote_id);
-      await this.store.pool.query("UPDATE bell_monitors SET status='cancelled' WHERE id=$1", [watch.id]); return;
+      await this.store.markCancelled(watch.id); return;
     }
     if (watch.stopped || watch.status !== "active") return;
     if (job.kind === "update") {
@@ -184,7 +180,7 @@ export class MonitorService {
           return [];
         });
         const ids = events.flatMap(event => event.event_type === "event_stream" ? [event.event_id] : []);
-        const known = new Set((await this.store.pool.query<{ event_id: string }>("SELECT event_id FROM bell_monitor_events WHERE watch_id=$1 AND event_id=ANY($2::text[])", [watch.id, ids])).rows.map(row => row.event_id));
+        const known = await this.store.knownEventIds(watch.id, ids);
         for (const event of events) {
           const identity = event.event_type === "event_stream" ? event.event_id : `${event.event_type}:${event.timestamp}`;
           anchor ??= identity;
@@ -195,12 +191,12 @@ export class MonitorService {
         const next = result.next_cursor ?? undefined;
         if (!next) {
           if (invalidEvents) {
-            await this.store.pool.query("UPDATE bell_monitors SET recovery_gap=true WHERE id=$1", [watch.id]);
+            await this.store.markRecoveryGap(watch.id);
             throw new InvalidMonitorEvent("Invalid monitor event in recovery scan");
           }
           if (!group) {
             const gap = watch.scan_anchor ? !previousAnchorSeen : runs.size >= 100;
-            await this.store.pool.query("UPDATE bell_monitors SET last_scan_at=$2,scan_anchor=COALESCE($3,scan_anchor),recovery_gap=recovery_gap OR $4 WHERE id=$1", [watch.id, started, anchor ?? null, gap]);
+            await this.store.completeScan(watch.id, started, anchor ?? null, gap);
           }
           return;
         }
@@ -210,7 +206,7 @@ export class MonitorService {
       if (cursor && cursor !== saved.cursor && saved.resumes < resumeLimit) {
         return { group, cursor, started, anchor, anchor_seen: previousAnchorSeen, runs: [...runs], invalid: invalidEvents, resumes: saved.resumes + 1 };
       }
-      await this.store.pool.query("UPDATE bell_monitors SET recovery_gap=true WHERE id=$1", [watch.id]);
+      await this.store.markRecoveryGap(watch.id);
       throw new Error("Recovery scan exceeded work budget");
     }
   }
@@ -223,10 +219,7 @@ export class MonitorService {
     const urls = [...new Set(event.output.basis.flatMap(b => b.citations.map(c => c.url).filter((u): u is string => !!u)))].slice(0, 3);
     const text = `Watch update: ${watch.query.slice(0, 120)}\n${content.slice(0, 1200)}${content.length > 1200 ? "…" : ""}\n${urls.join("\n")}`;
     const key = `bell-watch-${hash(`${watch.id}:${event.event_id}`)}`;
-    await this.store.transaction(async client => {
-      const inserted = await client.query("INSERT INTO bell_monitor_events (watch_id,event_id,payload) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING event_id", [watch.id, event.event_id, event]);
-      if (inserted.rowCount) await this.store.enqueue("send", key, watch.id, { text, key, eventId: event.event_id }, client);
-    });
+    await this.store.recordEvent(watch.id, event.event_id, event, key, { text, key, eventId: event.event_id });
   }
 }
 export function monitors() { return new MonitorService(monitorStore()); }

@@ -28,14 +28,14 @@ Before changing the flag to `true`, the platform and SDK must support loading bo
    | `ONEPASSWORD_TOKEN_ENCRYPTION_KEY` | Stable 32-byte base64 key; generate with `openssl rand -base64 32`. Back it up with the database and do not rotate by overwriting it. |
    | `BROWSERBASE_API_KEY` | Browserbase access. |
    | `BROWSERBASE_PROJECT_ID` | Optional when the project is inferred from the API key. |
-   | `BROWSERBASE_1PASSWORD_EXTENSION_ID` | Browserbase upload ID for the supported Agentic Autofill extension. This enables personal-browser mode. |
+   | `BROWSERBASE_1PASSWORD_EXTENSION_ID` | Browserbase upload ID for the supported Agentic Autofill extension. Personal-browser mode also requires `ONEPASSWORD_ENABLED=true`. |
 
 3. Register the OAuth client through a 1Password Business account. The connecting test user needs a separate US Individual or Families account and the supported desktop app/extension. Follow the current [Browserbase setup guide](https://docs.browserbase.com/integrations/1password/agentic-autofill) for partner access and extension packaging. A regular service-account token is not a replacement for this client or extension.
 4. Keep the public callback and `/eve/v1/connections/.../callback/...` paths reachable through Vercel protection without adding query parameters to the registered redirect. The callbacks use server-issued, short-lived capabilities; do not make unrelated application routes public.
 5. Keep Linq signature verification, receiving-line configuration, and the sender allowlist enabled. Groups are deliberately rejected. The web operator login does not establish an individual iMessage identity and cannot select someone else's personal account.
 6. Start new conversations for the rollout. Remove `BROWSERBASE_CONTEXT_ID` when personal-browser mode is enabled. Bell disables reusable Context creation, selection, saving, and cookie export in this mode. Existing contexts are not deleted, and their cookies are not migrated into personal sessions. Disable the old `ONEPASSWORD_OAUTH_STATE_SECRET`; the new record encryption key replaces its use.
 
-Setting the extension upload ID changes browser launch configuration. Stagehand 4 also needs its own extension. Bell requires Stagehand initialization and the 1Password runtime API to succeed in the same session; failures stop the operation and do not fall back to reading passwords through the SDK. The local synthetic test verifies coexistence in Chrome. Verify the actual hosted extension combination before enabling this on a public deployment; an upload ID alone is not proof of compatibility.
+Personal-browser mode requires `ONEPASSWORD_ENABLED=true` and the extension upload ID together. That pair changes browser launch configuration. Stagehand 4 also needs its own extension. Bell requires Stagehand initialization and the 1Password runtime API to succeed in the same session; failures stop the operation and do not fall back to reading passwords through the SDK. The local synthetic test verifies coexistence in Chrome. Verify the actual hosted extension combination before enabling this on a public deployment; an upload ID alone is not proof of compatibility.
 
 ## User flow
 

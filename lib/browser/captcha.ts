@@ -4,6 +4,17 @@ export const CAPTCHA_EVENT_NAMES = [
   "browserbase-solving-errored",
 ] as const;
 export type CaptchaSignal = "started" | "finished" | "errored";
+export interface CaptchaTransition {
+  id: string;
+  type: CaptchaSignal | "timed_out";
+  at: string;
+  page?: { origin: string; path: string };
+}
+
+export function captchaTimeoutMs(): number {
+  const value = Number(process.env.BELL_CAPTCHA_TIMEOUT_MS ?? 30_000);
+  return Number.isFinite(value) && value > 0 ? value : 30_000;
+}
 
 export function parseBrowserbaseCaptchaEvent(value: unknown): CaptchaSignal | undefined {
   if (!value || typeof value !== "object") return;

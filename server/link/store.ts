@@ -1,4 +1,5 @@
 import { Pool, type PoolClient } from "pg";
+import { createPool, withAdvisoryLock } from "../postgres";
 
 export interface LinkOwner { issuer: string; id: string }
 export interface Grant {
@@ -102,30 +103,10 @@ export class LinkStore {
   }
 
   async withOwner<T>(owner: LinkOwner, operation: (store: OwnerStore) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    let locked = false;
-    let destroy = false;
-    try {
-      // A session lock spans independently committed writes around remote OAuth calls.
-      // In-progress markers must survive process failure; a transaction rollback would
-      // otherwise allow a single-use authorization code or refresh token to be retried.
-      await client.query("SET statement_timeout = '30s'");
-      await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [ownerKey(owner)]);
-      locked = true;
-      return await operation(new OwnerStore(client, owner));
-    } finally {
-      if (locked) {
-        try {
-          await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [ownerKey(owner)]);
-        } catch { destroy = true; }
-      } else { destroy = true; }
-      client.release(destroy);
-    }
+    return withAdvisoryLock(this.pool, ownerKey(owner), (client) => operation(new OwnerStore(client, owner)));
   }
 }
 
 export function createLinkStore(databaseUrl: string): LinkStore {
-  const pool = new Pool({ connectionString: databaseUrl, max: 5, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 30_000 });
-  pool.on("error", () => console.error("Link database connection failed."));
-  return new LinkStore(pool);
+  return new LinkStore(createPool(databaseUrl, "Link"));
 }

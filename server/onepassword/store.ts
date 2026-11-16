@@ -1,4 +1,5 @@
 import { Pool, type PoolClient } from "pg";
+import { withAdvisoryLock } from "../postgres";
 import { seal, unseal } from "../encrypted-record";
 import { failed } from "./config";
 
@@ -50,17 +51,6 @@ export class OnePasswordStore {
     return (await this.pool.query<{ owner: string }>("SELECT owner FROM bell_onepassword_tickets WHERE hash=$1 AND expires_at>now()", [hash])).rows[0]?.owner;
   }
   async withOwner<T>(owner: string, operation: (db: RecordStore) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    let destroy = false;
-    try {
-      await client.query("SET statement_timeout='30s'");
-      // The session lock spans committed crash markers around single-use token exchanges.
-      await client.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [`onepassword:${owner}`]);
-      return await operation(new RecordStore(client, owner, this.key));
-    } finally {
-      try { await client.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [`onepassword:${owner}`]); }
-      catch { destroy = true; }
-      client.release(destroy);
-    }
+    return withAdvisoryLock(this.pool, `onepassword:${owner}`, (client) => operation(new RecordStore(client, owner, this.key)));
   }
 }

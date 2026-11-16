@@ -69,6 +69,31 @@ describe("resuming a browser after CAPTCHA handoff", () => {
       expect(taskState.get()).toMatchObject({ status: "waiting_for_user", captcha: { status: "errored" } });
     }));
 
+  it("records a listener event on the turn that is running", () =>
+    contextStorage.run(new ContextContainer(), async () => {
+      const id = "captcha-active-turn";
+      const other = new ContextContainer();
+      taskState.update(current => ({ ...current, sessionId: id }));
+      try {
+        await runBrowserOperation(id, async browser => {
+          const notify = (browser as unknown as {
+            options: { onCaptchaTransition?: (transition: { id: string; type: "started" | "errored"; at: string }) => void };
+          }).options.onCaptchaTransition;
+          const at = new Date().toISOString();
+          contextStorage.run(other, () => {
+            notify?.({ id: "challenge-start", type: "started", at });
+            notify?.({ id: "challenge-error", type: "errored", at });
+          });
+        });
+        expect(taskState.get()).toMatchObject({ status: "waiting_for_user", captcha: { status: "errored" } });
+        contextStorage.run(other, () => {
+          expect(taskState.get().captcha).toBeUndefined();
+        });
+      } finally {
+        await closeBrowserRuntime(id);
+      }
+    }));
+
   it("preserves CAPTCHA handoff errors from secure login", async () => {
     const browser = new BrowserSession({
       id: "login-handoff", traces: [], browser: { provider: "not-started", status: "idle" },
