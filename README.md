@@ -2,7 +2,7 @@
 
 <p align="center"> <img width="128" height="128" alt="BELL" src="https://github.com/user-attachments/assets/f4c9363d-2ab0-4205-a3c7-7d7ad61ec6c6"/></p>
 
-[BELL](https://www.browserbase.com/blog/bell-personal-assistant-stack) is a reference architecture and sample app for building personal AI assistants that execute tasks on your behalf.
+[BELL](https://www.browserbase.com/blog/bell-personal-assistant-stack) is a reference architecture and sample app for running your own personal assistant. It combines browser automation, messaging, personal memory, and payments.
 
 - Browserbase: Browser + Stagehand
 - Eve by Vercel: Agent Framework
@@ -10,7 +10,8 @@
 - Link by Stripe: Payments
 - Linq: Messaging Infrastruture
 - 1Password: Authentication
-- Baselayer: Identity 
+- Baselayer: Identity
+- Notion: Personal memory across conversations
 
 
 ## Run locally
@@ -38,6 +39,7 @@ pnpm dev
 | --- | --- | --- |
 | Browserbase + Stagehand | Browser sessions, automation, saved Contexts, and human handoff | [Browser runtime](docs/browser-runtime.md) |
 | Eve by Vercel | Agent configuration, tools, conversation state, and channels | [Eve in Bell](docs/repository.md#eve-by-vercel) |
+| Notion | Preferences, personal plans, and everyday task history across conversations | [Memory setup](docs/notion.md) |
 | Parallel | Public-web research and persistent watches with configurable frequency | Set `PARALLEL_API_KEY` in `.env`; [watch setup](docs/monitors.md) |
 | Linq | iMessage and SMS through a signed webhook and sender allowlist | [Messaging setup](docs/linq.md) |
 | Link by Stripe | Wallet authorization, spend approval, and checkout through Linq | [Sandbox and wallet setup](docs/link.md) |
