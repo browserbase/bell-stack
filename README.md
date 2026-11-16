@@ -24,7 +24,7 @@ pnpm install --frozen-lockfile
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` and `BROWSERBASE_API_KEY` in `.env`. For ordinary browsing, set `BELL_DEMO_URL` to your target website. 
+Set `OPENAI_API_KEY` or `AI_GATEWAY_API_KEY`, plus `BROWSERBASE_API_KEY`, in `.env`. When a Gateway key is set, `BELL_MODEL` routes through AI Gateway. For ordinary browsing, set `BELL_DEMO_URL` to your target website.
 Set `PARALLEL_API_KEY` to enable public-web research. Keep research inputs public; use the browser for authenticated pages and actions.
 
 ```sh

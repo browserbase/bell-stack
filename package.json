@@ -28,6 +28,8 @@
     "@browserbasehq/sdk": "2.18.0",
     "@browserbasehq/stagehand": "4.3.0",
     "@stripe/link-integrations-eve": "0.3.4",
+    "@ui-sdk/core": "0.1.0-beta.3",
+    "@ui-sdk/react": "0.1.0-beta.3",
     "ai": "7.0.137",
     "eve": "0.79.1",
     "next": "16.4.3",
@@ -39,12 +41,14 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "4.3.5",
     "@types/node": "24.19.0",
     "@types/pg": "8.23.1",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "eslint": "9.39.5",
     "eslint-config-next": "16.4.3",
+    "tailwindcss": "4.3.5",
     "typescript": "6.0.3",
     "vitest": "4.1.12"
   },

@@ -1,8 +1,15 @@
 import { openai } from "@ai-sdk/openai";
 import { defineAgent } from "eve";
 
+const model = process.env.BELL_MODEL ?? "gpt-6.1-sol";
+const apiGatewayKey = process.env.AI_GATEWAY_API_KEY?.trim();
+
 export default defineAgent({
-  model: openai.responses(process.env.BELL_MODEL ?? "gpt-5.6-sol"),
+  model: apiGatewayKey
+    ? model.includes("/")
+      ? model
+      : `openai/${model}`
+    : openai.responses(model),
   build: {
     externalDependencies: [
       "@1password/sdk",

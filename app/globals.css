@@ -1,0 +1,100 @@
+@layer ui-sdk;
+@import "tailwindcss";
+@import "@ui-sdk/core/web.css" layer(components);
+
+@theme {
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+
+  --tracking-wide: 0.025em;
+
+  --color-white: #fff;
+
+  --color-brand-yellow: #f4ba41;
+  --color-brand-pink: #ec679b;
+  --color-brand-green: #90c94d;
+
+  --color-bg-main: #ffffff;
+  --color-bg-bedrock: #f6f5f5;
+  --color-bg-top: #ffffff;
+  --color-bg-subtle: #fafafa;
+  --color-bg-layered: color-mix(in srgb, #260f17 6%, transparent);
+
+  --color-text-primary: #260f17;
+  --color-text-secondary: #514f4f;
+  --color-text-tertiary: #6e6c6a;
+
+  --color-border-faint: color-mix(in srgb, #260f17 7%, transparent);
+  --color-border-solid: #edebeb;
+  --color-border-medium: #cac8c7;
+
+  --color-primary: #ff4500;
+  --color-error: #ce1f02;
+  --color-success: #71ac38;
+  --color-alert: #f8d06f;
+  --color-active: #4da9e4;
+}
+
+:root {
+  color-scheme: light;
+  --ui-primary: #c93400;
+  --ui-primary-foreground: #fff;
+  --ui-ring: #c93400;
+  --ui-radius: 6px;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border-faint);
+  }
+  body {
+    background: var(--color-bg-bedrock);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 2px solid #c93400;
+    outline-offset: 4px;
+  }
+}
+
+@layer components {
+  .secondary-button {
+    display: inline-flex;
+    height: 36px;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--color-border-medium);
+    border-radius: 6px;
+    background: white;
+    padding: 0 12px;
+    color: var(--color-text-primary);
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .secondary-button:hover:not(:disabled) {
+    background: var(--color-bg-subtle);
+    border-color: #8d898b;
+  }
+  .secondary-button:disabled {
+    opacity: 0.5;
+  }
+  .skip-link {
+    position: fixed;
+    z-index: 50;
+    top: 8px;
+    left: 8px;
+    transform: translateY(-150%);
+    border-radius: 6px;
+    background: white;
+    padding: 12px;
+  }
+  .skip-link:focus {
+    transform: translateY(0);
+  }
+}
