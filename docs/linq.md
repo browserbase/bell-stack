@@ -99,6 +99,14 @@ hosted extension and live verification requirements are met. The staged personal
 single-step sign-in only; OTP and passkeys are not implemented. Do not send passwords or OTPs
 as chat messages.
 
+## Scheduled updates
+
+Bell uses this same channel for [morning Notion updates and user-requested reminders](reminders.md).
+The 8:30 AM morning job finds the existing private chat through Linq's API, checks the sender
+allowlist, and reuses that sender's Notion connection. There are no separate recipient settings.
+Dynamic reminders capture the verified chat when created and recheck access when due.
+Both run the existing Bell agent and deliver its reply to Linq. A web Notion grant is separate.
+
 ## Verification boundary
 
 `pnpm test` sends signed HTTP requests through the installed Eve/Linq adapter and checks dispatch

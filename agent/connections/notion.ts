@@ -11,19 +11,23 @@ export default defineDynamic({
       if (auth?.principalType !== "user" || !["bell:operator", "linq"].includes(auth.issuer ?? "")) return null;
       const principal = { type: "user" as const, id: auth.principalId, issuer: auth.issuer };
       const owner = notionOwner(principal);
+      const scheduled = ctx.session.schedule !== undefined;
+      const readTools = [
+        "notion-search", "notion-fetch", "notion-memory-search", "notion-get-self",
+        "notion-get-tool-access", "notion-query-data-sources", "notion-get-async-task",
+      ];
       return defineMcpClientConnection({
         url: notionEndpoint,
         instanceKey: owner,
         description: "Notion: the user's personal preferences, routines, plans, decisions, and notes across conversations. Search before relying on remembered information.",
         protocolVersionDiscovery: false,
         auth: notionAuth,
-        tools: { allow: [
-          "notion-search", "notion-fetch", "notion-memory-search", "notion-get-self",
-          "notion-get-tool-access", "notion-query-data-sources",
+        tools: { allow: scheduled ? readTools : [...readTools,
           "notion-create-pages", "notion-update-page", "notion-create-database", "notion-update-data-source",
-          "notion-get-async-task", "notion-delete-pages",
+          "notion-delete-pages",
         ] },
         approval: async ({ toolName }) => {
+          if (scheduled && /__notion-(?:create|update|delete)-/.test(toolName)) return "denied";
           if (toolName.startsWith("notion__") && (await safeNotion(() => getNotionOAuth().status(principal))).status !== "connected")
             return "denied";
           return /__(?:notion-create-database|notion-update-data-source|notion-delete-pages)$/.test(toolName)

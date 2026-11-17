@@ -103,7 +103,12 @@ and memory instructions. If a write fails, Bell reports the unsaved record separ
 the original task outcome and does not repeat the action.
 
 Memory is saved during conversations. There is no background account sync or guaranteed
-logging after a process crash, and a saved deadline is not a scheduled reminder.
+logging after a process crash. Once Notion is connected in a private Linq chat, the
+[morning update](reminders.md) reads fresh plans and deadlines at 8:30 AM in Bell's local
+timezone and sends its reply to that existing chat. Additional reminders and recurring
+checks are created when the user asks. A saved deadline alone schedules nothing.
+Briefings use the Notion account connected in that Linq chat and cannot change notes or mark
+plans complete. Editing a note does not change or cancel a schedule.
 
 ## Verify
 
