@@ -78,12 +78,10 @@ describe("terminal cleanup in a fresh Eve worker", () => {
       await Promise.all([first, second]);
       expect(hasBrowserRuntime(id)).toBe(false);
     }));
-  it.each(["session.completed", "session.failed"] as const)(
+  it.each(["completed", "failed"] as const)(
     "%s recovers the persisted browser and retains it until release succeeds", (event) =>
     contextStorage.run(new ContextContainer(), async () => {
-      const retire = () => event === "session.completed"
-        ? browserChannelEvents[event]({}, undefined, { session: { id: "fresh-worker-retirement" } })
-        : browserChannelEvents[event]({ sessionId: "fresh-worker-retirement" });
+      const retire = () => browserChannelEvents["session.ended"]({ data: { outcome: event } }, { session: { id: "fresh-worker-retirement" } });
       const id = "fresh-worker-retirement";
       taskState.update((current) => ({
         ...current,
@@ -107,7 +105,7 @@ describe("terminal cleanup in a fresh Eve worker", () => {
       }
     }));
     
-  it("turn.cancelled releases the persisted browser before clearing its ID", () =>
+  it("turn.settled releases the persisted browser before clearing its ID", () =>
     contextStorage.run(new ContextContainer(), async () => {
       const id = "fresh-worker-cancel";
       taskState.update((current) => ({
@@ -115,9 +113,9 @@ describe("terminal cleanup in a fresh Eve worker", () => {
         browser: { lifecycle: "active", sessionId: "persisted-browser" },
       }));
       release.mockResolvedValue({ status: "COMPLETED" });
-      await taskHooks.events!["turn.cancelled"]!(
-        { type: "turn.cancelled", meta: { id: "evt_cancel" } } as never,
-        { session: { id } } as never,
+      await taskHooks.events!["turn.settled"]!(
+        { type: "turn.settled", data: { outcome: "cancelled" } } as never,
+        { session: { id }, position: { line: 3, index: 0 }, now: new Date() } as never,
       );
       expect(release).toHaveBeenCalledExactlyOnceWith("persisted-browser", { status: "REQUEST_RELEASE" });
       expect(taskState.get()).toMatchObject({ status: "canceled", browser: { lifecycle: "closed" } });

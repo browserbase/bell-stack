@@ -128,7 +128,7 @@ it.each(["localhost", "127.0.0.1", "[::1]"])("accepts development reads and writ
     id: "synthetic-session",
     cancel: async () => ({ status: "accepted", sessionId: "synthetic-session" }),
     getStreamTailIndex: async () => -1,
-    getEventStream: async () => new ReadableStream({ start(controller) { controller.close(); } }),
+    getLineStream: async () => new ReadableStream({ start(controller) { controller.close(); } }),
   }));
   const origin = `http://${host}:4320`;
   for (const route of [cancel, stream]) {

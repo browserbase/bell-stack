@@ -98,8 +98,8 @@ describe("durable CAPTCHA reducer", () => {
     state = applyTaskEvent(
       state,
       {
-        type: "step.started",
-        meta: { id: "step", at: "2026-09-05T00:00:02.000Z" },
+        type: "model.started",
+        data: {} as never,
       },
       state.sessionId,
     );

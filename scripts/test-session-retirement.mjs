@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import Browserbase from "@browserbasehq/sdk";
 import { Client } from "eve/client";
+import { calls, emptySessionView, foldEvents } from "eve/events";
 
 // Opt-in: requires a running local Bell and uses the configured model/browser.
 if (process.env.BELL_LIVE_RETIREMENT !== "1" || !process.env.BROWSERBASE_API_KEY)
@@ -8,14 +9,14 @@ if (process.env.BELL_LIVE_RETIREMENT !== "1" || !process.env.BROWSERBASE_API_KEY
 const origin = new URL(process.env.BELL_TEST_ORIGIN || "http://127.0.0.1:4320");
 if (origin.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(origin.hostname))
   throw new Error("This test accepts only a local Bell origin.");
-const client = new Client({ host: origin.origin });
+const client = new Client({ baseUrl: origin.origin });
 const browserbase = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
 let session;
 const browserIds = new Set();
 const contextIds = new Set();
 const remember = (events) => {
-  for (const event of events) {
-    const browser = event.data?.result?.output?.workbench?.browser;
+  for (const call of calls(foldEvents(emptySessionView(), events), { kind: "tool" })) {
+    const browser = call.output?.workbench?.browser;
     if (browser?.sessionId) browserIds.add(browser.sessionId);
     if (browser?.contextId) contextIds.add(browser.contextId);
   }
@@ -27,30 +28,23 @@ try {
     signal: AbortSignal.timeout(90_000),
   });
   session = created.session;
-  const first = await created.response.result();
-  remember(first.events);
-  assert.equal(first.status, "waiting");
-  assert.ok(first.message?.includes("Example Domain"));
+  const first = await created.delivery.result();
+  remember((await session.snapshot()).events);
+  assert.equal(first.status, "completed");
+  assert.ok(first.reply?.includes("Example Domain"));
   assert.equal(browserIds.size, 1);
   const second = await (await session.send(
     "Without navigating, use snapshot to confirm the current page title and URL. Reply briefly.",
     { signal: AbortSignal.timeout(45_000) },
   )).result();
-  remember(second.events);
-  assert.equal(second.status, "waiting");
+  remember((await session.snapshot()).events);
+  assert.equal(second.status, "completed");
   assert.equal(browserIds.size, 1, "Follow-up must reuse the same hosted browser");
-  const reset = await session.reset({ reason: "Completed browser retirement regression" });
-  assert.equal(reset.status, "reset");
-  const completionDeadline = Date.now() + 20_000;
-  let completed = false;
-  do {
-    const snapshot = await session.snapshot();
-    completed = snapshot.events.some((event) => event.type === "session.completed");
-    if (completed) break;
-    assert.ok(!snapshot.events.some((event) => event.type === "session.failed"), "Session failed during retirement");
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  } while (Date.now() < completionDeadline);
-  assert.ok(completed, "Reset must publish session.completed");
+  const end = await session.end({ reason: "Completed browser retirement regression" });
+  assert.ok((await end.result({ signal: AbortSignal.timeout(20_000) })).sessionEnded);
+  const snapshot = await session.snapshot();
+  assert.ok(snapshot.events.some((event) => event.type === "session.ended" && event.data.outcome === "completed"),
+    "Ending the session must publish successful completion");
   for (const id of browserIds) {
     const deadline = Date.now() + 20_000;
     let status;
@@ -59,16 +53,16 @@ try {
       if (status === "COMPLETED") break;
       await new Promise((resolve) => setTimeout(resolve, 500));
     } while (Date.now() < deadline);
-    assert.equal(status, "COMPLETED", "Reset must release the hosted browser");
+    assert.equal(status, "COMPLETED", "Ending the session must release the hosted browser");
   }
-  console.log("Live retirement passed: two turns shared one browser; reset emitted completion and Browserbase confirmed COMPLETED.");
+  console.log("Live retirement passed: two turns shared one browser; ending emitted completion and Browserbase confirmed COMPLETED.");
 } finally {
   const cleanupErrors = [];
   if (session) {
     // Recover IDs even if a model assertion fails. Do not print private events.
     try { remember((await session.snapshot()).events); } catch { /* Session may not have started. */ }
-    try { await session.reset({ reason: "Integration test cleanup" }); }
-    catch { cleanupErrors.push("Eve session reset failed"); }
+    try { await session.end({ reason: "Integration test cleanup" }); }
+    catch { cleanupErrors.push("Eve session end failed"); }
   }
   for (const id of browserIds) {
     try {
