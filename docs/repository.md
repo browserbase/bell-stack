@@ -68,9 +68,9 @@ the Browserbase copyright and license terms covering the browser source.
 ## Browser retirement
 
 The HTTP and Linq channels release the hosted browser on terminal session events, including
-when cleanup runs in a fresh worker or when a session ends outside a turn. Cleanup uses
-channel callbacks. A failed release retains the browser ID and reaches
-Eve's error logging; failed callbacks are not automatically retried. Starting a new conversation
+when cleanup runs in a fresh worker or when a session ends outside a turn. Channel callbacks
+handle cleanup. A failed release retains the browser ID and reaches Eve's error logging.
+Failed callbacks are not automatically retried. Starting a new conversation
 ends the prior session and releases its browser. Browserbase sessions still have provider
 lifetimes, so this does not guarantee an indefinitely running browser.
 
@@ -82,13 +82,3 @@ BELL_LIVE_RETIREMENT=1 pnpm test:retirement:live
 
 The test opens example.com, checks browser reuse across two turns, ends the session, verifies
 provider release, and deletes its temporary Context. It uses the configured model and Browserbase.
-
-## Upgrading existing deployments to Eve 1
-
-Finish or end sessions on the old deployment before upgrading from Eve 0.79.1. They
-cannot move to the new deployment. Eve 1.1 also uses a new SQLite store for local runs,
-so start new local conversations after upgrading. Bell's Link and Notion grants live in
-PostgreSQL and can be reused in new conversations with the same verified identity
-and existing encryption keys. Eve may expire transcripts for private sessions when
-they end, depending on the Workflow backend and retention policy. See the
-[Eve upgrade guide](https://eve.dev/docs/guides/upgrade).
