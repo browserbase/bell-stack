@@ -6,7 +6,6 @@ import { MessageThread } from "./phone/message-thread";
 import { MessageComposer } from "./phone/message-composer";
 import { WorkspaceHeader } from "./workspace/workspace-header";
 import { BrowserPreview } from "./workspace/browser-preview";
-import { WebMcpBridge } from "./webmcp-bridge";
 
 export default function BellWorkspace({
   sessionId,
@@ -18,7 +17,6 @@ export default function BellWorkspace({
   const conversation = useBellConversation(sessionId);
   return (
     <>
-      <WebMcpBridge />
       <a href="#message" className="skip-link">
         Skip to message
       </a>

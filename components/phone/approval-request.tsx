@@ -44,7 +44,6 @@ export function ApprovalRequest({
         {request.options?.map((option) => (
           <Button
             key={option.id}
-            data-agent-confirm={`Replies to Bell: ${option.label}`}
             onClick={() =>
               respond({ requestId: request.requestId, optionId: option.id })
             }
@@ -79,7 +78,6 @@ export function ApprovalRequest({
           </Field>
           <Button
             type="submit"
-            data-agent-confirm="Sends your reply to Bell"
             disabled={!reply.trim()}
             className="approval-option"
           >

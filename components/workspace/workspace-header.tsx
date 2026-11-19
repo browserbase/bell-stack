@@ -23,7 +23,6 @@ export function WorkspaceHeader({
         </div>
         <Button
           onClick={onNewConversation}
-          data-agent-confirm="Closes the current conversation and starts a new one"
           disabled={waiting}
           className="secondary-button"
         >

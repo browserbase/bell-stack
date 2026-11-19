@@ -84,7 +84,6 @@ export function BrowserPreview({
                 className="secondary-button mt-4"
                 disabled={waiting}
                 onClick={onOpenDemo}
-                data-agent-confirm="Opens the demo site with Bell"
               >
                 Open demo
               </Button>
