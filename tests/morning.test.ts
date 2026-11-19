@@ -5,7 +5,7 @@ import * as notionOAuth from "../server/notion/oauth";
 const line = "+12025550100";
 const sender = "+12025550123";
 function chat(id = "private-chat", senderId = "sender-id", phone = sender) {
-  return { id, is_group: false, is_archived: false, handles: [
+  return { id, is_group: false, handles: [
     { id: "line-id", handle: line, is_me: true, status: "active", left_at: null },
     { id: senderId, handle: phone, is_me: false, status: "active", left_at: null },
   ] };
@@ -58,10 +58,26 @@ describe("Fixed morning schedule", () => {
     });
   });
 
+  it.each([undefined, null])("reuses a private chat when participant metadata is %s", async metadata => {
+    const value = chat();
+    const handles = value.handles.map(handle => ({ ...handle, is_me: metadata, status: metadata }));
+    vi.mocked(fetch).mockResolvedValue(Response.json({ chats: [{ ...value, handles }], next_cursor: null }));
+    const { to, send } = await run();
+    expect(to).toHaveBeenCalledWith(linq, { adapterName: "linq", threadId: "linq:private-chat" });
+    expect(connected).toHaveBeenCalledWith({ type: "user", issuer: "linq", id: "linq:sender-id" });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it("ignores the deprecated archive flag", async () => {
+    vi.mocked(fetch).mockResolvedValue(Response.json({ chats: [{ ...chat(), is_archived: true }], next_cursor: null }));
+    expect((await run()).send).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["group", (value: ReturnType<typeof chat>) => { value.is_group = true; }],
-    ["archived", (value: ReturnType<typeof chat>) => { value.is_archived = true; }],
     ["wrong line", (value: ReturnType<typeof chat>) => { value.handles[0].handle = "+12025550999"; }],
+    ["line marked as external", (value: ReturnType<typeof chat>) => { value.handles[0].is_me = false; }],
+    ["sender marked as owned", (value: ReturnType<typeof chat>) => { value.handles[1].is_me = true; }],
     ["unlisted sender", (value: ReturnType<typeof chat>) => { value.handles[1].handle = "+12025550999"; }],
     ["removed participant", (value: ReturnType<typeof chat>) => { value.handles[1].status = "removed"; }],
     ["extra participant", (value: ReturnType<typeof chat>) => { value.handles.push({ ...value.handles[1], id: "third" }); }],

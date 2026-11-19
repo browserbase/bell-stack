@@ -3,12 +3,12 @@ import { allowed } from "./monitors/config";
 import { request } from "./monitors/provider";
 
 const handleSchema = z.object({
-  id: z.string().min(1), handle: z.string(), is_me: z.boolean().optional(),
-  left_at: z.string().nullish(), status: z.string().optional(),
+  id: z.string().min(1), handle: z.string(), is_me: z.boolean().nullish(),
+  left_at: z.string().nullish(), status: z.string().nullish(),
 });
 const chatsSchema = z.object({
   chats: z.array(z.object({
-    id: z.string().min(1), is_group: z.boolean(), is_archived: z.boolean().optional(),
+    id: z.string().min(1), is_group: z.boolean(),
     handles: z.array(handleSchema),
   })),
   next_cursor: z.string().nullish(),
@@ -25,10 +25,10 @@ export async function privateLinqRecipients() {
   for (;;) {
     const page = chatsSchema.parse(await request(`https://api.linqapp.com/api/partner/v3/chats?${params}`, key, "GET", undefined, true));
     for (const chat of page.chats) {
-      if (chat.is_group || chat.is_archived) continue;
+      if (chat.is_group) continue;
       const handles = chat.handles.filter(handle => !handle.left_at && (!handle.status || handle.status === "active"));
-      if (handles.length !== 2 || !handles.some(handle => handle.is_me && handle.handle === line)) continue;
-      const sender = handles.find(handle => handle.is_me === false);
+      if (handles.length !== 2 || !handles.some(handle => handle.handle === line && handle.is_me !== false)) continue;
+      const sender = handles.find(handle => handle.handle !== line && handle.is_me !== true);
       if (!sender || seen.has(sender.id)) continue;
       const destination = { chat: chat.id, sender: sender.handle, line };
       if (!allowed(destination)) continue;
