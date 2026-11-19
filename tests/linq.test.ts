@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { linqSignIn } from "./helpers/linq-sign-in";
 import linq from "../agent/channels/linq";
+import { localTimezone } from "../agent/lib/linq";
 import { ContextContainer, contextStorage } from "../node_modules/eve/dist/src/context/container.js";
 import { SessionKey } from "../node_modules/eve/dist/src/context/keys.js";
 import type { ChannelAdapter } from "../node_modules/eve/dist/src/channel/adapter.js";
@@ -85,6 +86,21 @@ async function deliver(event: ReturnType<typeof message>, options: { tamper?: bo
 }
 
 describe("Bell's signed Linq webhook", () => {
+  it("supplies the local timezone to the agent without a user question", async () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    const event = message();
+    const { dispatch } = await deliver(event);
+    expect(dispatch).toHaveBeenCalledWith(event.data.parts[0].value, expect.objectContaining({
+      context: [expect.stringContaining("The default local timezone is America/Los_Angeles")],
+      auth: expect.objectContaining({ attributes: expect.objectContaining({ bell_timezone: "America/Los_Angeles" }) }),
+    }));
+  });
+
+  it("uses the machine's local timezone from the process environment", () => {
+    vi.stubEnv("TZ", "Pacific/Auckland");
+    expect(localTimezone()).toBe("Pacific/Auckland");
+  });
+
   it("dispatches a verified direct message to Bell with sender auth and chat state", async () => {
     const event = message();
     const { response, from, dispatch } = await deliver(event);

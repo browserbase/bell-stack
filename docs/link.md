@@ -99,6 +99,7 @@ For checkout, give Bell the merchant, item, quantity, and budget. Bell confirms 
 including shipping and tax. Eve confirmation and Link approval are both retained. Bell checks
 the same request and uses `link__checkout` to retrieve and submit credentials server-side in the
 existing browser. The model receives status metadata, never card numbers, CVCs, or payment tokens.
+Checkout requires an interactive Linq conversation.
 Human handoff is reserved for 3DS and other human-only steps. A submission or confirmation element
 is not proof of payment: Bell must verify the merchant receipt/order and Link status before reporting
 success. An uncertain submission must be reconciled before retrying.

@@ -11,6 +11,7 @@ export default defineTool({
   description: "Submit an already-approved Link purchase in the existing browser. Supply exact CSS payment-field mappings and the approved amount/currency. Virtual-card values stay server-side. Shared Payment Tokens and Link Pay Tokens require a separate integration and are not accepted. Use only once per purchase; an uncertain outcome requires checking the merchant and Link before any retry. Human handoff remains available for 3DS.",
   inputSchema: checkoutInput,
   async execute(args, ctx) {
+    if (ctx.session.schedule !== undefined) throw new Error("Link checkout requires an interactive Linq conversation.");
     const input = checkoutInput.parse(args);
     linkPrincipal(ctx);
     ctx.abortSignal.throwIfAborted();

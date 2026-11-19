@@ -315,3 +315,28 @@ it("validates the personal Notion connection for Bell and Linq identities", asyn
     expect(value).toMatchObject({ url: "https://mcp.notion.com/mcp", instanceKey: notionOwner({ type: "user", id: current.principalId, issuer: current.issuer }) });
   }
 });
+
+it("keeps scheduled Notion sessions read-only, including forced write calls", async () => {
+  vi.stubEnv("NOTION_ENABLED", "true");
+  const definition = (await import("../agent/connections/notion")).default;
+  const connection = await dynamicEvaluate(definition)({
+    session: { id: "scheduled", schedule: { definition: "reminders" }, auth: { current: {
+      principalType: "user", principalId: "operator", issuer: "bell:operator", authenticator: "http-basic", attributes: {},
+    } } }, channel: {},
+  } as never);
+  if (!connection || !("url" in connection) || typeof connection.approval !== "function") throw new Error("Expected a scheduled Notion connection");
+  const filter = connection.tools;
+  if (!filter || !("allow" in filter)) throw new Error("Expected a read-tool allowlist");
+  expect(filter.allow).toContain("notion-fetch");
+  expect(filter.allow).toContain("notion-get-async-task");
+  expect(filter.allow).not.toContain("notion-update-page");
+  const f = fixture();
+  await authorize(f);
+  const oauthModule = await import("../server/notion/oauth");
+  const service = vi.spyOn(oauthModule, "getNotionOAuth").mockReturnValue(f.oauth);
+  try {
+    expect(await connection.approval({ toolName: "notion__notion-fetch" } as never)).toBe("not-applicable");
+    expect(await connection.approval({ toolName: "notion__notion-update-page" } as never)).toBe("denied");
+    expect(await connection.approval({ toolName: "notion__notion-create-pages" } as never)).toBe("denied");
+  } finally { service.mockRestore(); }
+});

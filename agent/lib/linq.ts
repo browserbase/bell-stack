@@ -17,3 +17,7 @@ export function requiredEnvironmentValue(name: string): string {
   if (!value) throw new Error(`${name} is required for the Linq channel.`);
   return value;
 }
+
+export function localTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}

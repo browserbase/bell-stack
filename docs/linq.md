@@ -99,6 +99,11 @@ hosted extension and live verification requirements are met. The staged personal
 single-step sign-in only; OTP and passkeys are not implemented. Do not send passwords or OTPs
 as chat messages.
 
+## Scheduled updates
+
+Bell sends [morning Notion briefings and user-requested reminders](reminders.md)
+to your existing private chat. An allowlisted sender can connect Notion from that chat.
+
 ## Verification boundary
 
 `pnpm test` sends signed HTTP requests through the installed Eve/Linq adapter and checks dispatch

@@ -1,4 +1,4 @@
-import { linqBrowserEvents, requiredEnvironmentValue } from "../lib/linq";
+import { linqBrowserEvents, localTimezone, requiredEnvironmentValue } from "../lib/linq";
 import { defaultLinqAuth, linqChannel, type LinqChannelConfig } from "eve/channels/linq";
 import { z } from "zod";
 
@@ -40,12 +40,15 @@ export default linqChannel({
     if (!isAllowedBellMessage(message)) return null;
     const auth = defaultLinqAuth(message);
     const incoming = inboundMessage.parse(message.raw);
+    const timezone = localTimezone();
     return {
-      auth: { ...auth, attributes: { ...auth.attributes, bell_watch_chat: incoming.chat.id, bell_watch_sender: incoming.sender_handle.handle, bell_watch_line: incoming.chat.owner_handle.handle } },
+      auth: { ...auth, attributes: { ...auth.attributes, bell_timezone: timezone, bell_watch_chat: incoming.chat.id, bell_watch_sender: incoming.sender_handle.handle, bell_watch_line: incoming.chat.owner_handle.handle } },
       context: [
         "This request arrived through Bell's private Linq iMessage or SMS channel. "
         + "Reply concisely in this chat. Use the same browser for follow-up requests. "
-        + "For a human-only step, send the human_handoff tool's link and wait for a reply.",
+        + "For a human-only step, send the human_handoff tool's link and wait for a reply. "
+        + `The default local timezone is ${timezone}; current time is ${new Date().toISOString()}. `
+        + "Use the user's saved timezone preference when available, otherwise this default. Do not ask for their timezone.",
       ],
     };
   },

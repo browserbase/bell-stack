@@ -28,7 +28,7 @@ lifecycle; channel callbacks also handle terminal-session cleanup. Restart Bell 
 | Integration | Implementation | Guide |
 | --- | --- | --- |
 | Browserbase + Stagehand | [Browser runtime](../agent/lib/browser-runtime.ts), [session management](../server/browser/browser-session.ts) | [Browser configuration](browser-runtime.md) |
-| Eve by Vercel | [Agent](../agent/agent.ts), [channels](../agent/channels/), [hooks](../agent/hooks/) | [Eve in Bell](#eve-by-vercel) |
+| Eve by Vercel | [Agent](../agent/agent.ts), [channels](../agent/channels/), [hooks](../agent/hooks/), [schedules](../agent/schedules/) | [Eve in Bell](#eve-by-vercel) · [Reminders](reminders.md) |
 | Notion | [MCP connection](../agent/connections/notion.ts), [OAuth](../server/notion/), [personal memory Skill](../agent/skills/notion-memory/SKILL.md) | [Memory setup](notion.md) |
 | Linq | [Channel and sender policy](../agent/channels/linq.ts) | [Messaging setup](linq.md) |
 | Link by Stripe | [Eve extension and tools](../agent/extensions/link/), [authorization](../agent/lib/link-auth.ts), [server implementation](../server/link/) | [Sandbox and wallet setup](link.md) |
