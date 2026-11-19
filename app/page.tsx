@@ -1,4 +1,8 @@
-import Chat from "./chat";
+import BellWorkspace from "../components/bell-workspace";
 export default function Page() {
-  return <Chat demoUrl={process.env.BELL_DEMO_URL ?? "https://example.com"} />;
+  return (
+    <BellWorkspace
+      demoUrl={process.env.BELL_DEMO_URL ?? "https://example.com"}
+    />
+  );
 }

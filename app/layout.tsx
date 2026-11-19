@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
-import "./style.css";
+import "./globals.css";
 
 export const metadata = {
-  title: "Bell | Personal assistant stack",
+  title: "Bell | Your personal assistant",
   description: "A small, independent browser assistant.",
+  icons: { icon: "/bell.png" },
 };
 export default function Layout({ children }: { children: ReactNode }) {
   return (
