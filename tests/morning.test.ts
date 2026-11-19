@@ -14,8 +14,8 @@ const connected = vi.fn(async () => ({ status: "connected" }));
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date("2026-11-18T03:00:00Z"));
-  vi.stubEnv("TZ", "Asia/Kolkata");
+  vi.setSystemTime(new Date("2026-11-18T13:30:00Z"));
+  vi.stubEnv("TZ", "America/Montreal");
   vi.stubEnv("NOTION_ENABLED", "true");
   vi.stubEnv("LINQ_API_KEY", "synthetic-key");
   vi.stubEnv("BELL_LINQ_PHONE_NUMBER", line);
@@ -26,16 +26,15 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
-async function run() {
+async function run(send = vi.fn(async () => ({} as never))) {
   const morning = (await import("../agent/schedules/morning")).default;
-  const send = vi.fn(async () => ({} as never));
   const to = vi.fn(() => ({ send }));
   await morning.run!({ to, waitUntil: () => {}, appAuth: {} as never });
   return { to, send };
 }
 
 describe("Fixed morning schedule", () => {
-  it("configures Eve to run daily at 8:30 in the configured IANA timezone", async () => {
+  it("configures Eve to run daily at 8:30 in the host timezone", async () => {
     const morning = (await import("../agent/schedules/morning")).default;
     expect(morning).toMatchObject({
       cron: "30 8 * * *",
@@ -49,8 +48,9 @@ describe("Fixed morning schedule", () => {
     expect(new URL(String(url)).searchParams.get("from")).toBe(line);
     expect(options?.headers).toMatchObject({ Authorization: "Bearer synthetic-key" });
     expect(connected).toHaveBeenCalledWith({ type: "user", issuer: "linq", id: "linq:sender-id" });
-    expect(to).toHaveBeenCalledWith(linq, { adapterName: "linq", threadId: "linq:private-chat" });
+    expect(to).toHaveBeenCalledWith(linq, { adapterName: "linq", threadId: "linq:private-chat", morningDate: "2026-11-18" });
     expect(send).toHaveBeenCalledWith(expect.stringContaining("Give the user a short morning update"), {
+      idempotencyKey: "morning:2026-11-18:private-chat",
       auth: expect.objectContaining({
         principalType: "user", issuer: "linq", principalId: "linq:sender-id", subject: "sender-id",
         attributes: expect.objectContaining({ bell_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, bell_watch_chat: "private-chat", bell_watch_sender: sender }),
@@ -63,7 +63,7 @@ describe("Fixed morning schedule", () => {
     const handles = value.handles.map(handle => ({ ...handle, is_me: metadata, status: metadata }));
     vi.mocked(fetch).mockResolvedValue(Response.json({ chats: [{ ...value, handles }], next_cursor: null }));
     const { to, send } = await run();
-    expect(to).toHaveBeenCalledWith(linq, { adapterName: "linq", threadId: "linq:private-chat" });
+    expect(to).toHaveBeenCalledWith(linq, expect.objectContaining({ adapterName: "linq", threadId: "linq:private-chat" }));
     expect(connected).toHaveBeenCalledWith({ type: "user", issuer: "linq", id: "linq:sender-id" });
     expect(send).toHaveBeenCalledOnce();
   });
@@ -102,8 +102,21 @@ describe("Fixed morning schedule", () => {
     vi.mocked(fetch).mockResolvedValue(Response.json({ chats: [chat(), chat("second-chat", "second-sender", "+12025550456")] }));
     const { send, to } = await run();
     expect(send).toHaveBeenCalledTimes(2);
-    expect(to).toHaveBeenNthCalledWith(2, linq, { adapterName: "linq", threadId: "linq:second-chat" });
+    expect(to).toHaveBeenNthCalledWith(2, linq, expect.objectContaining({ adapterName: "linq", threadId: "linq:second-chat" }));
     expect(connected).toHaveBeenNthCalledWith(2, { type: "user", issuer: "linq", id: "linq:second-sender" });
+  });
+
+  it.each(["Notion status", "dispatch"])("continues after a recipient's %s fails", async failure => {
+    vi.stubEnv("BELL_LINQ_ALLOWED_SENDERS", `${sender},+12025550456`);
+    vi.mocked(fetch).mockResolvedValue(Response.json({ chats: [chat(), chat("second-chat", "second-sender", "+12025550456")] }));
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const send = vi.fn(async () => ({} as never));
+    if (failure === "Notion status") connected.mockRejectedValueOnce(new Error("notion status unavailable"));
+    else send.mockRejectedValueOnce(new Error("dispatch unavailable"));
+
+    const { to } = await run(send);
+    expect(to).toHaveBeenLastCalledWith(linq, expect.objectContaining({ threadId: "linq:second-chat" }));
+    expect(log).toHaveBeenCalledOnce();
   });
 
   it("does not create a chat when none exists", async () => {

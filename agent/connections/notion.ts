@@ -1,5 +1,6 @@
 import { defineDynamic, defineMcpClientConnection } from "eve/connections";
 import { notionAuth } from "../lib/notion-auth";
+import { notionReadTools } from "../lib/scheduled-tools";
 import { notionEnabled, notionEndpoint, notionOwner, safeNotion } from "../../server/notion/config";
 import { getNotionOAuth } from "../../server/notion/oauth";
 
@@ -10,17 +11,13 @@ export default defineDynamic((ctx) => {
   const principal = { type: "user" as const, id: auth.principalId, issuer: auth.issuer };
   const owner = notionOwner(principal);
   const scheduled = ctx.session.schedule !== undefined;
-  const readTools = [
-    "notion-search", "notion-fetch", "notion-memory-search", "notion-get-self",
-    "notion-get-tool-access", "notion-query-data-sources", "notion-get-async-task",
-  ];
   return defineMcpClientConnection({
     url: notionEndpoint,
     instanceKey: owner,
     description: "Notion: the user's personal preferences, routines, plans, decisions, and notes across conversations. Search before relying on remembered information.",
     protocolVersionDiscovery: false,
     auth: notionAuth,
-    tools: { allow: scheduled ? readTools : [...readTools,
+    tools: { allow: scheduled ? notionReadTools : [...notionReadTools,
       "notion-create-pages", "notion-update-page", "notion-create-database", "notion-update-data-source",
       "notion-delete-pages",
     ] },

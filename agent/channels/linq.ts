@@ -1,4 +1,6 @@
 import { linqBrowserEvents, localTimezone, requiredEnvironmentValue } from "../lib/linq";
+import type { Channel, InferChannelMetadata } from "eve/channels";
+import type { ChatSdkChannelState, ChatSdkReceiveTarget } from "eve/channels/chat-sdk";
 import { defaultLinqAuth, linqChannel, type LinqChannelConfig } from "eve/channels/linq";
 import { z } from "zod";
 
@@ -28,7 +30,7 @@ export function isAllowedBellMessage(message: Pick<LinqMessage, "author" | "raw"
     && allowedSenders.data.includes(incoming.data.sender_handle.handle);
 }
 
-export default linqChannel({
+const linq = linqChannel({
   events: linqBrowserEvents,
   userName: "Bell",
   credentials: {
@@ -53,3 +55,21 @@ export default linqChannel({
     };
   },
 });
+
+type BellLinqTarget = ChatSdkReceiveTarget & { morningDate?: string };
+const receive = linq.receive;
+if (!receive) throw new Error("The Eve Linq channel requires a receive handler.");
+
+const channel: Channel<ChatSdkChannelState, BellLinqTarget, InferChannelMetadata<typeof linq>> = {
+  ...linq,
+  receive(input, ctx) {
+    const { morningDate } = input.target;
+    // Eve's address selects a session. The Linq adapter still posts to the real thread ID.
+    return receive(input, morningDate === undefined ? ctx : {
+      ...ctx,
+      from: address => ctx.from(`morning:${morningDate}:${address}`),
+    });
+  },
+};
+
+export default channel;

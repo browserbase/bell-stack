@@ -3,6 +3,8 @@ import linq from "../agent/channels/linq";
 import morning from "../agent/schedules/morning";
 import reminders from "../agent/schedules/reminders";
 import * as notionOAuth from "../server/notion/oauth";
+import agent from "../agent/agent";
+import type { AgentDefinition } from "eve";
 // @ts-expect-error Eve 1.1 does not publish declarations for its internal dispatcher.
 import { ScheduleDispatcher } from "../node_modules/eve/dist/src/channel/schedule.js";
 import type { ChannelAdapter, ChannelAdapterContext } from "../node_modules/eve/dist/src/channel/adapter.js";
@@ -18,8 +20,8 @@ const { adapter } = linq as unknown as {
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date("2026-11-18T03:00:00Z"));
-  vi.stubEnv("TZ", "Asia/Kolkata");
+  vi.setSystemTime(new Date("2026-11-18T13:30:00Z"));
+  vi.stubEnv("TZ", "America/Montreal");
   vi.stubEnv("NOTION_ENABLED", "true");
   vi.spyOn(notionOAuth, "getNotionOAuth").mockReturnValue({ status: async () => ({ status: "connected" }) } as never);
   vi.stubEnv("BELL_LINQ_PHONE_NUMBER", "+12025550100");
@@ -42,7 +44,7 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.unstubAllGlobals();
 
 it.each([
   ["morning", false], ["morning", true], ["reminders", false],
-])("delivers %s through Eve and Linq (existing session: %s)", async (kind, existingSession) => {
+])("delivers %s through Eve and Linq (active interactive session: %s)", async (kind, existingSession) => {
   const createSession = vi.fn<(input: RunInput) => Promise<{ sessionId: string }>>()
     .mockImplementation(async () => {
       const context = contextStorage.getStore();
@@ -51,10 +53,14 @@ it.each([
       return { sessionId: "scheduled-session" };
     });
   const dispatchContinuation = vi.fn<(input: DispatchContinuationInput) => Promise<SessionSendCommandResult>>()
-    .mockResolvedValue(existingSession ? { status: "accepted", sessionId: "scheduled-session" } : { status: "session_not_active" });
+    .mockImplementation(async ({ continuationToken }) =>
+      existingSession && continuationToken === "linq:linq:private-chat"
+        ? { status: "accepted", sessionId: "interactive-session" }
+        : { status: "session_not_active" },
+    );
   const dispatcher = new ScheduleDispatcher({
     runtime: { createSession, dispatchContinuation },
-    channels: [{ name: "linq", definition: linq, receive: linq.receive, adapter }],
+    channels: [{ name: "linq", definition: linq, receive: linq.receive, adapter, turnPolicy: linq.turnPolicy }],
   });
   if (kind === "morning") {
     await dispatcher.trigger({ scheduleId: "morning", run: morning.run });
@@ -68,18 +74,24 @@ it.each([
         envelope: {
           version: 3, scope: "test-user",
           principal: { type: "user", authenticator: "linq-message", issuer: "linq", principalId: "linq:sender-id", subject: "sender-id" },
-          payload: { task: "Remind the user to buy milk", timezone: "Asia/Kolkata", destination: {
+          payload: { task: "Remind the user to buy milk", timezone: "America/Montreal", destination: {
             chat: "private-chat", sender: "+12025550123", line: "+12025550100",
           } },
         },
       },
     });
   }
-  expect(createSession).toHaveBeenCalledTimes(existingSession ? 0 : 1);
-  const delivery = existingSession ? dispatchContinuation.mock.calls[0][0] : undefined;
-  const input = delivery?.successor ?? createSession.mock.calls[0][0];
+  expect(createSession).toHaveBeenCalledOnce();
+  const input = createSession.mock.calls[0][0];
+  if (kind === "morning") {
+    expect(dispatchContinuation).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      continuationToken: expect.stringMatching(/^linq:morning:\d{4}-\d{2}-\d{2}:linq:private-chat$/),
+      command: expect.objectContaining({ schedule: { definition: "morning" } }),
+    }));
+  } else {
+    expect(dispatchContinuation).not.toHaveBeenCalled();
+  }
   expect(input.auth).toMatchObject({ principalType: "user", issuer: "linq", principalId: "linq:sender-id" });
-  if (delivery) expect(delivery.command).toMatchObject({ schedule: { definition: kind } });
   expect(input.input.state).toMatchObject({ thread: { id: "linq:private-chat" } });
   const context = new ContextContainer();
   context.set(SessionKey, { sessionId: "scheduled-session", turn: { id: "scheduled-turn" } } as never);
@@ -93,4 +105,17 @@ it.each([
     }, { ...adapterContext, view: emptySessionView() });
   });
   expect(fetch).toHaveBeenCalledTimes(kind === "morning" ? 2 : 1);
+});
+
+it("limits unattended turns to read-only tools without changing interactive approvals", async () => {
+  type ApprovalContext = Parameters<NonNullable<AgentDefinition["approval"]>>[0];
+  const approval = agent.approval;
+  const scheduled = { definition: "morning" };
+  for (const toolName of ["notion__notion-search", "no_reply", "web_search"])
+    expect(await approval({ session: { schedule: scheduled }, toolName } as ApprovalContext)).toBeUndefined();
+
+  for (const toolName of ["watch_create", "schedule__reminders__create", "run", "link__checkout", "notion__notion-update-page"]) {
+    expect(await approval({ session: { schedule: scheduled }, toolName } as ApprovalContext)).toMatchObject({ type: "denied" });
+    expect(await approval({ session: {}, toolName } as ApprovalContext)).toBeUndefined();
+  }
 });

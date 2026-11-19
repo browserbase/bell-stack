@@ -60,8 +60,8 @@ describe("Native Eve schedules", () => {
   it.each(["0 7 * * *", "30 8 * * *", "0 9 * * *"])("uses Eve's CRUD and per-user scope for daily %s schedules", async cron => {
     const definition = { ...reminders, provider: inMemoryScheduleProvider() };
     const client = createScheduleCollectionClient(definition, { ...context, application: "bell-test", collection: "reminders" });
-    const record = await client.create({ name: "morning", expression: { type: "cron", cron, timezone: "Asia/Kolkata" }, payload: { task: "Read Notion plans in Asia/Kolkata" } });
-    const timezone = new Intl.DateTimeFormat("en", { timeZone: "Asia/Kolkata" }).resolvedOptions().timeZone;
+    const record = await client.create({ name: "morning", expression: { type: "cron", cron, timezone: "America/Montreal" }, payload: { task: "Read Notion plans in Montreal" } });
+    const timezone = new Intl.DateTimeFormat("en", { timeZone: "America/Montreal" }).resolvedOptions().timeZone;
     expect(record.expression).toEqual({ type: "cron", cron, timezone });
     expect((await client.list()).data).toHaveLength(1);
     const other = createScheduleCollectionClient(definition, {
@@ -72,7 +72,7 @@ describe("Native Eve schedules", () => {
     expect(await other.delete(record.name)).toBe(false);
     expect((await client.disable(record.name)).state).toBe("inactive");
     expect((await client.enable(record.name)).state).toBe("active");
-    await client.update(record.name, { expression: { type: "cron", cron: "0 10 * * *", timezone: "Asia/Kolkata" } });
+    await client.update(record.name, { expression: { type: "cron", cron: "0 10 * * *", timezone: "America/Montreal" } });
     expect((await client.get(record.name))?.expression).toMatchObject({ cron: "0 10 * * *" });
     expect(await client.delete(record.name)).toBe(true);
   });

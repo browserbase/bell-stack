@@ -8,9 +8,9 @@ Complete [Linq setup](linq.md) with Bell's receiving line and your sender allowl
 For morning briefings, [connect Notion](notion.md) in that chat. Bell sends briefings
 only to existing private chats with an allowed sender and a connected Notion account.
 
-The morning briefing runs at 8:30 AM in Bell's local timezone. Set `TZ` in the build
-and runtime environments if the host's timezone differs from yours. For reminders
-you request, specify a timezone in your message if you want to override the default.
+Bell uses your saved timezone preference for reminders when available and falls back to
+the host's timezone. Linq does not send your device timezone, so the fixed morning
+briefing runs at 8:30 AM in the host's timezone.
 
 On Vercel, the morning job uses Vercel Schedules. On a self-hosted Node server, it
 runs while `eve start` is active. In development, trigger it on demand with
@@ -33,8 +33,9 @@ Text Bell to create or manage reminders:
 - "Cancel my travel briefing."
 
 You can set a reminder without connecting Notion. Bell rechecks the sender allowlist
-before running a reminder. Scheduled runs use read-only Notion access. Link checkout
-requires an interactive Linq conversation.
+before running a reminder. Scheduled runs can look up information in Notion and on the
+public web. Creating watches, changing reminders, and Link checkout require an
+interactive Linq conversation.
 
 ## Persistence and recovery
 
