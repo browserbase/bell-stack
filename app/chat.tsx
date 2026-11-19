@@ -1,6 +1,7 @@
 "use client";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
+import { Client, ClientError, SessionNotActiveError } from "eve/client";
 import { useEveAgent } from "eve/react";
 import { activeTurn, openInteractions, signInEnding } from "eve/events";
 import { useState } from "react";
@@ -39,7 +40,14 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
     setRetiring(true);
     setError("");
     try {
-      if (agent.session || sessionId) await agent.end();
+      try {
+        if (agent.session) await agent.end();
+        else if (sessionId) await new Client({ baseUrl: "" }).sessions.attach(sessionId).end();
+      } catch (error) {
+        const inactive = SessionNotActiveError.is(error) && !error.retryable;
+        const expired = ClientError.is(error) && error.code === "session_expired";
+        if (!inactive && !expired) throw error;
+      }
       agent.newSession();
       setInput("");
       router.push("/");
