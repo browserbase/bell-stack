@@ -37,9 +37,9 @@ describe("resuming a browser after CAPTCHA handoff", () => {
         });
         expect(page.snapshot).not.toHaveBeenCalled();
 
-        await taskHooks.events!["message.received"]!({
-          type: "message.received", data: { message: "done" }, meta: { id: "new-reply" },
-        } as never, { session: { id } } as never);
+        await taskHooks.events!["delivery.consumed"]!({
+          type: "delivery.consumed", data: { parts: [{ kind: "text", text: "done" }] },
+        } as never, { session: { id }, position: { line: 3, index: 0 }, now: new Date() } as never);
         expect(await runBrowserOperation(id, browser => browser.snapshot())).toMatchObject({
           result: { tree: "Account home", url: "https://shop.example/account" },
           workbench: { captcha: { status: "idle" } },
@@ -56,16 +56,16 @@ describe("resuming a browser after CAPTCHA handoff", () => {
   it("does not let an old replayed message clear a new handoff", () =>
     contextStorage.run(new ContextContainer(), async () => {
       const id = "captcha-replayed-reply";
-      taskState.update(current => ({ ...current, sessionId: id, processedEventIds: ["old-reply"] }));
+      taskState.update(current => ({ ...current, sessionId: id, processedEventIds: ["3:0"] }));
       taskState.update(current => applyCaptchaTransition(current, {
         id: "challenge-start", type: "started", at: new Date().toISOString(),
       }));
       taskState.update(current => applyCaptchaTransition(current, {
         id: "challenge-error", type: "errored", at: new Date().toISOString(),
       }));
-      await taskHooks.events!["message.received"]!({
-        type: "message.received", data: { message: "done" }, meta: { id: "old-reply" },
-      } as never, { session: { id } } as never);
+      await taskHooks.events!["delivery.consumed"]!({
+        type: "delivery.consumed", data: { parts: [{ kind: "text", text: "done" }] },
+      } as never, { session: { id }, position: { line: 3, index: 0 }, now: new Date() } as never);
       expect(taskState.get()).toMatchObject({ status: "waiting_for_user", captcha: { status: "errored" } });
     }));
 

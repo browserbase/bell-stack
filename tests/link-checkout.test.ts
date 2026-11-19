@@ -42,7 +42,7 @@ const purchaseHistory = {
     { type: "total", display_text: "Total", amount: 4200 },
   ],
   activity_url: "https://link.example/activity/spend_1",
-  expires_at: 1795305600,
+  expires_at: "2026-11-22T00:00:00.000Z",
   recurring: { interval: "month", interval_count: 1 },
   payment_status_details: {
     outcome: "success", code: null, decline_code: null,

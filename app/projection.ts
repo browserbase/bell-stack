@@ -1,32 +1,28 @@
-export function browserPreview(events: readonly unknown[]) {
+import type { CallRequestedData, CallSettledData, ReceivedEvent } from "eve/events";
+
+export function browserPreview(events: readonly Pick<ReceivedEvent, "type" | "data">[]) {
   let screenshot: string | undefined;
   let url: string | undefined;
   let httpStatus: number | undefined;
-  for (const value of events) {
-    if (!value || typeof value !== "object") continue;
-    const event = value as {
-      type?: string;
-      data?: {
-        result?: { kind?: string; toolName?: string; isError?: boolean; output?: unknown };
-      };
-    };
-    const result = event.data?.result;
-    if (
-      event.type !== "action.result" ||
-      result?.kind !== "tool-result" ||
-      result.isError ||
-      !result.output ||
-      typeof result.output !== "object"
-    )
-      continue;
-    const envelope = result.output as {
+  const tools = new Map<string, string>();
+  for (const event of events) {
+    if (event.type === "call.requested") {
+      const call = event.data as CallRequestedData;
+      if (call.capability.kind === "tool") tools.set(call.callId, call.capability.name);
+    }
+    if (event.type !== "call.settled") continue;
+    const { callId, outcome, output: result } = event.data as CallSettledData;
+    if (outcome !== "completed") continue;
+    const name = tools.get(callId);
+    if (!name || !result || typeof result !== "object" || Array.isArray(result)) continue;
+    const envelope = result as {
       result?: Record<string, unknown>;
       workbench?: { screenshotDataUrl?: string; browser?: { url?: string } };
     };
-    const output = envelope.result ?? (result.output as Record<string, unknown>);
+    const output = envelope.result ?? (result as Record<string, unknown>);
     const workbench = envelope.workbench;
     const nextUrl = typeof output.url === "string" ? output.url : workbench?.browser?.url;
-    if (result.toolName === "run" || (typeof nextUrl === "string" && nextUrl !== url)) {
+    if (name === "run" || (typeof nextUrl === "string" && nextUrl !== url)) {
       // Ordinary browser work can navigate without reporting an HTTP status.
       httpStatus = undefined;
       screenshot = undefined;

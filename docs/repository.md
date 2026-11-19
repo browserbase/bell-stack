@@ -28,7 +28,7 @@ lifecycle; channel callbacks also handle terminal-session cleanup. Restart Bell 
 | Integration | Implementation | Guide |
 | --- | --- | --- |
 | Browserbase + Stagehand | [Browser runtime](../agent/lib/browser-runtime.ts), [session management](../server/browser/browser-session.ts) | [Browser configuration](browser-runtime.md) |
-| Eve by Vercel | [Agent](../agent/agent.ts), [channels](../agent/channels/), [hooks](../agent/hooks/) | [Eve in Bell](#eve-by-vercel) |
+| Eve by Vercel | [Agent](../agent/agent.ts), [channels](../agent/channels/), [hooks](../agent/hooks/), [schedules](../agent/schedules/) | [Eve in Bell](#eve-by-vercel) · [Reminders](reminders.md) |
 | Notion | [MCP connection](../agent/connections/notion.ts), [OAuth](../server/notion/), [personal memory Skill](../agent/skills/notion-memory/SKILL.md) | [Memory setup](notion.md) |
 | Linq | [Channel and sender policy](../agent/channels/linq.ts) | [Messaging setup](linq.md) |
 | Link by Stripe | [Eve extension and tools](../agent/extensions/link/), [authorization](../agent/lib/link-auth.ts), [server implementation](../server/link/) | [Sandbox and wallet setup](link.md) |
@@ -68,10 +68,10 @@ the Browserbase copyright and license terms covering the browser source.
 ## Browser retirement
 
 The HTTP and Linq channels release the hosted browser on terminal session events, including
-when cleanup runs in a fresh worker. Eve 0.79.1 skips global stream hooks for completion outside
-a turn, so cleanup uses channel callbacks. A failed release retains the browser ID and reaches
-Eve's error logging; failed callbacks are not automatically retried. Starting a new conversation
-resets the prior session and releases its browser. Browserbase sessions still have provider
+when cleanup runs in a fresh worker or when a session ends outside a turn. Channel callbacks
+handle cleanup. A failed release retains the browser ID and reaches Eve's error logging.
+Failed callbacks are not automatically retried. Starting a new conversation
+ends the prior session and releases its browser. Browserbase sessions still have provider
 lifetimes, so this does not guarantee an indefinitely running browser.
 
 With Bell running locally and its provider credentials loaded, run the opt-in regression:
@@ -80,5 +80,5 @@ With Bell running locally and its provider credentials loaded, run the opt-in re
 BELL_LIVE_RETIREMENT=1 pnpm test:retirement:live
 ```
 
-The test opens example.com, checks browser reuse across two turns, resets the session, verifies
+The test opens example.com, checks browser reuse across two turns, ends the session, verifies
 provider release, and deletes its temporary Context. It uses the configured model and Browserbase.

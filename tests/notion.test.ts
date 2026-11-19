@@ -8,6 +8,7 @@ import type { LockedState, NotionPersistence, NotionState } from "../server/noti
 import { notionPrincipal, createNotionAuth } from "../agent/lib/notion-auth";
 import notionDisconnect from "../agent/tools/notion_disconnect";
 
+import { dynamicEvaluate } from "../node_modules/eve/dist/src/dynamic/definition.js";
 import { ContextContainer, contextStorage } from "../node_modules/eve/dist/src/context/container.js";
 import { AuthKey, SessionIdKey, SessionKey } from "../node_modules/eve/dist/src/context/keys.js";
 import { CallbackBaseUrlKey, PendingAuthorizationResultKey, isAuthorizationSignal } from "../node_modules/eve/dist/src/harness/authorization.js";
@@ -280,9 +281,9 @@ it("omits unsupported callers and checks the stored grant before tools can reuse
   const session = { id: "test", auth: { current: {
     principalType: "user" as const, principalId: "operator", issuer: "bell:operator", authenticator: "http-basic", attributes: {},
   } } };
-  const resolver = definition.events["turn.started"]!;
-  expect(await resolver({}, { session: { ...session, auth: { current: { principalType: "runtime" } } } } as never)).toBeNull();
-  const connection = await resolver({}, { session, channel: {} } as never);
+  const resolver = dynamicEvaluate(definition);
+  expect(await resolver({ session: { ...session, auth: { current: { principalType: "runtime" } } } } as never)).toBeNull();
+  const connection = await resolver({ session, channel: {} } as never);
   if (!connection || !("url" in connection) || typeof connection.approval !== "function") throw new Error("Expected an MCP connection with approval policy");
   const f = fixture();
   await authorize(f);
@@ -300,21 +301,42 @@ it("omits unsupported callers and checks the stored grant before tools can reuse
     status.mockRestore();
   } finally { service.mockRestore(); }
   vi.stubEnv("NOTION_ENABLED", "false");
-  expect(await resolver({}, { session, channel: {} } as never)).toBeNull();
+  expect(await resolver({ session, channel: {} } as never)).toBeNull();
 });
 
-it("validates the personal Notion connection through Eve's runtime resolver", async () => {
+it("validates the personal Notion connection for Bell and Linq identities", async () => {
   vi.stubEnv("NOTION_ENABLED", "true");
   const definition = (await import("../agent/connections/notion")).default;
-  const { resolveDynamicConnectionValue } = await import("../node_modules/eve/dist/src/runtime/resolve-connection.js");
   for (const current of [
     { principalType: "user", principalId: "operator", issuer: "bell:operator", authenticator: "http-basic", attributes: {} },
     { principalType: "user", principalId: "linq:sender", issuer: "linq", authenticator: "linq-message", attributes: {} },
   ]) {
-    const value = await definition.events["turn.started"]!({}, { session: { id: "test", auth: { current } }, channel: {} } as never);
-    const resolved = resolveDynamicConnectionValue(value, {
-      connectionName: "notion", logicalPath: "connections/notion.ts", sourceId: "notion-test", sourceKind: "module",
-    });
-    expect(resolved).toMatchObject({ connectionName: "notion", url: "https://mcp.notion.com/mcp" });
+    const value = await dynamicEvaluate(definition)({ session: { id: "test", auth: { current } }, channel: {} } as never);
+    expect(value).toMatchObject({ url: "https://mcp.notion.com/mcp", instanceKey: notionOwner({ type: "user", id: current.principalId, issuer: current.issuer }) });
   }
+});
+
+it("keeps scheduled Notion sessions read-only, including forced write calls", async () => {
+  vi.stubEnv("NOTION_ENABLED", "true");
+  const definition = (await import("../agent/connections/notion")).default;
+  const connection = await dynamicEvaluate(definition)({
+    session: { id: "scheduled", schedule: { definition: "reminders" }, auth: { current: {
+      principalType: "user", principalId: "operator", issuer: "bell:operator", authenticator: "http-basic", attributes: {},
+    } } }, channel: {},
+  } as never);
+  if (!connection || !("url" in connection) || typeof connection.approval !== "function") throw new Error("Expected a scheduled Notion connection");
+  const filter = connection.tools;
+  if (!filter || !("allow" in filter)) throw new Error("Expected a read-tool allowlist");
+  expect(filter.allow).toContain("notion-fetch");
+  expect(filter.allow).toContain("notion-get-async-task");
+  expect(filter.allow).not.toContain("notion-update-page");
+  const f = fixture();
+  await authorize(f);
+  const oauthModule = await import("../server/notion/oauth");
+  const service = vi.spyOn(oauthModule, "getNotionOAuth").mockReturnValue(f.oauth);
+  try {
+    expect(await connection.approval({ toolName: "notion__notion-fetch" } as never)).toBe("not-applicable");
+    expect(await connection.approval({ toolName: "notion__notion-update-page" } as never)).toBe("denied");
+    expect(await connection.approval({ toolName: "notion__notion-create-pages" } as never)).toBe("denied");
+  } finally { service.mockRestore(); }
 });

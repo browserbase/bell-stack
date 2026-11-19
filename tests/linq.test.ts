@@ -1,7 +1,9 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { linqSignIn } from "./helpers/linq-sign-in";
 import linq from "../agent/channels/linq";
+import { localTimezone } from "../agent/lib/linq";
 import { ContextContainer, contextStorage } from "../node_modules/eve/dist/src/context/container.js";
 import { SessionKey } from "../node_modules/eve/dist/src/context/keys.js";
 import type { ChannelAdapter } from "../node_modules/eve/dist/src/channel/adapter.js";
@@ -84,6 +86,21 @@ async function deliver(event: ReturnType<typeof message>, options: { tamper?: bo
 }
 
 describe("Bell's signed Linq webhook", () => {
+  it("supplies the local timezone to the agent without a user question", async () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    const event = message();
+    const { dispatch } = await deliver(event);
+    expect(dispatch).toHaveBeenCalledWith(event.data.parts[0].value, expect.objectContaining({
+      context: [expect.stringContaining("The default local timezone is America/Los_Angeles")],
+      auth: expect.objectContaining({ attributes: expect.objectContaining({ bell_timezone: "America/Los_Angeles" }) }),
+    }));
+  });
+
+  it("uses the machine's local timezone from the process environment", () => {
+    vi.stubEnv("TZ", "Pacific/Auckland");
+    expect(localTimezone()).toBe("Pacific/Auckland");
+  });
+
   it("dispatches a verified direct message to Bell with sender auth and chat state", async () => {
     const event = message();
     const { response, from, dispatch } = await deliver(event);
@@ -118,21 +135,18 @@ describe("Bell's signed Linq webhook", () => {
       state: { pendingAuthMessageIds: {} },
     };
     const authorization = {
-      displayName: "Link", url: "https://login.link.com/auth?state=opaque-state",
+      name: "link", displayName: "Link", url: "https://login.link.com/auth?state=opaque-state",
       instructions: "Connect your wallet and return to this chat.",
     };
     const { adapter } = linq as unknown as { adapter: ChannelAdapter };
     const context = new ContextContainer();
     context.set(SessionKey, { sessionId: "original-eve-session" } as never);
     await contextStorage.run(context, async () => {
-      await adapter["authorization.required"]!(
-        { name: "link", authorization } as never, channel as never,
-      );
+      const signIn = linqSignIn(adapter, channel, authorization);
+      await signIn.open();
       expect(post).toHaveBeenCalledExactlyOnceWith({ markdown: expect.stringContaining(authorization.url) });
       expect(channel.state.pendingAuthMessageIds).toEqual({ link: "oauth-message" });
-      await adapter["authorization.completed"]!(
-        { name: "link", authorization, outcome: "authorized" } as never, channel as never,
-      );
+      await signIn.accept();
     });
     expect(editMessage).toHaveBeenCalledWith("original-linq-chat", "oauth-message", { markdown: "Link connected." });
     expect(startTyping).toHaveBeenCalledWith("Connected. Resuming...");

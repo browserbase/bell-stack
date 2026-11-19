@@ -11,6 +11,18 @@ const ctx = { authorized: true, session: { id: "synthetic-session" }, abortSigna
 const approved = { id: input.id, status: "approved", amount: 100, currency: "usd", merchant_url: "https://merchant.example", created_at: "now", updated_at: "now" };
 afterEach(() => vi.restoreAllMocks());
 describe("Link checkout tool", () => {
+  it.each([{ definition: "morning" }, { definition: "reminders", instance: "milk" }])(
+    "blocks checkout during $definition before any provider or browser work",
+    async schedule => {
+      const native = vi.spyOn(retrieve_spend_request, "execute").mockResolvedValue(approved as never);
+      vi.mocked(runBrowserOperation).mockClear();
+
+      await expect(checkout.execute(input, { ...ctx, session: { ...ctx.session, schedule } } as never))
+        .rejects.toThrow("Link checkout requires an interactive Linq conversation.");
+      expect(native).not.toHaveBeenCalled();
+      expect(runBrowserOperation).not.toHaveBeenCalled();
+    },
+  );
   it("rechecks approval at private retrieval and returns no credentials or browser workbench", async () => {
     const native = vi.spyOn(retrieve_spend_request, "execute").mockResolvedValueOnce(approved as never).mockResolvedValueOnce({ ...approved, card: { number: "synthetic-private" } } as never);
     vi.mocked(checkoutInHostedPage).mockImplementation(async (_page, _url, _input, _origins, get) => { expect(await get()).toHaveProperty("card.number", "synthetic-private"); return { id: input.id, status: "submission_attempted", verify_payment: true }; });
