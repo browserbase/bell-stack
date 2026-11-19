@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { linqSignIn } from "./helpers/linq-sign-in";
 import linq from "../agent/channels/linq";
 import { ContextContainer, contextStorage } from "../node_modules/eve/dist/src/context/container.js";
 import { SessionKey } from "../node_modules/eve/dist/src/context/keys.js";
@@ -118,21 +119,18 @@ describe("Bell's signed Linq webhook", () => {
       state: { pendingAuthMessageIds: {} },
     };
     const authorization = {
-      displayName: "Link", url: "https://login.link.com/auth?state=opaque-state",
+      name: "link", displayName: "Link", url: "https://login.link.com/auth?state=opaque-state",
       instructions: "Connect your wallet and return to this chat.",
     };
     const { adapter } = linq as unknown as { adapter: ChannelAdapter };
     const context = new ContextContainer();
     context.set(SessionKey, { sessionId: "original-eve-session" } as never);
     await contextStorage.run(context, async () => {
-      await adapter["authorization.required"]!(
-        { name: "link", authorization } as never, channel as never,
-      );
+      const signIn = linqSignIn(adapter, channel, authorization);
+      await signIn.open();
       expect(post).toHaveBeenCalledExactlyOnceWith({ markdown: expect.stringContaining(authorization.url) });
       expect(channel.state.pendingAuthMessageIds).toEqual({ link: "oauth-message" });
-      await adapter["authorization.completed"]!(
-        { name: "link", authorization, outcome: "authorized" } as never, channel as never,
-      );
+      await signIn.accept();
     });
     expect(editMessage).toHaveBeenCalledWith("original-linq-chat", "oauth-message", { markdown: "Link connected." });
     expect(startTyping).toHaveBeenCalledWith("Connected. Resuming...");

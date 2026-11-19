@@ -34,6 +34,8 @@ const total = z.object({
   amount: z.number(),
 });
 
+const expiration = z.union([z.number(), z.iso.datetime({ offset: true })]);
+
 const metadata = z.object({
   id: spendRequestId,
   status: z.string(),
@@ -56,7 +58,7 @@ const metadata = z.object({
   totals: z.array(total).optional(),
   approval_url: z.string().optional(),
   activity_url: z.string().optional(),
-  expires_at: z.number().optional(),
+  expires_at: expiration.optional(),
   recurring: z.object({
     interval: z.string(),
     interval_count: z.number().optional(),
@@ -83,7 +85,7 @@ const metadata = z.object({
         display_message: z.string().optional(),
         action_url: z.string().nullable().optional(),
         resolution: z.string().optional(),
-        expires_at: z.number().nullable().optional(),
+        expires_at: expiration.nullable().optional(),
       }).optional(),
     }).optional(),
   }).nullable().optional(),

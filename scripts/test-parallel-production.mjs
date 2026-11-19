@@ -23,7 +23,6 @@ const reservation = createServer();
 await new Promise((resolve, reject) => { reservation.once("error", reject); reservation.listen(Number(agentOrigin.port), "127.0.0.1", resolve); });
 await new Promise(resolve => reservation.close(resolve));
 const log = await open(path.join(directory, "server.log"), "w", 0o600);
-const eve = JSON.parse(await readFile("node_modules/eve/package.json", "utf8")).bin.eve;
 const children = [];
 function launch(args) {
   const child = spawn(process.execPath, args, { env, detached: true, stdio: ["ignore", log.fd, log.fd] });
@@ -41,10 +40,8 @@ async function ready(child, url) {
   }
 }
 try {
-  const agent = launch([path.join("node_modules/eve", eve), "start", "--host", "127.0.0.1", "--port", agentOrigin.port]);
-  await ready(agent, `${agentOrigin.origin}/eve/v1/health`);
   const server = launch(["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)]);
-  await ready(server, origin);
+  await ready(server, `${origin}/eve/v1/health`);
   const test = spawn(process.execPath, ["scripts/test-parallel-research.mjs"], { env, stdio: "inherit" });
   const code = await new Promise((resolve, reject) => { test.once("error", reject); test.once("exit", resolve); });
   assert.equal(code, 0, "Production-build browser E2E failed");

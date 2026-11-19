@@ -1,8 +1,9 @@
 "use client";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
+import { Client, ClientError, SessionNotActiveError } from "eve/client";
 import { useEveAgent } from "eve/react";
-import { Client } from "eve/client";
+import { activeTurn, openInteractions, signInEnding } from "eve/events";
 import { useState } from "react";
 import { browserPreview } from "./projection";
 
@@ -19,16 +20,11 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
         window.history.replaceState(null, "", `/s/${encodeURIComponent(session.sessionId)}`);
     },
   });
-  const busy = agent.status === "submitted" || agent.status === "streaming";
+  const busy = agent.status === "busy";
   const waiting = busy || agent.status === "resuming" || retiring;
+  const canStop = activeTurn(agent.view) !== undefined;
   const preview = browserPreview(agent.events);
-  const pending = agent.data.messages
-    .flatMap((message) => message.parts)
-    .flatMap((part) => {
-      if (part.type !== "dynamic-tool" || part.state !== "approval-requested") return [];
-      const request = part.toolMetadata?.eve?.inputRequest;
-      return request ? [request] : [];
-    });
+  const pending = openInteractions(agent.view).filter(({ request }) => request.kind !== "sign-in");
   async function send(text: string) {
     if (!text.trim() || waiting) return;
     setError("");
@@ -44,10 +40,15 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
     setRetiring(true);
     setError("");
     try {
-      const activeSessionId = agent.session?.sessionId ?? sessionId;
-      if (activeSessionId)
-        await new Client({ host: "" }).sessions.attach(activeSessionId).reset();
-      agent.reset();
+      try {
+        if (agent.session) await agent.end();
+        else if (sessionId) await new Client({ baseUrl: "" }).sessions.attach(sessionId).end();
+      } catch (error) {
+        const inactive = SessionNotActiveError.is(error) && !error.retryable;
+        const expired = ClientError.is(error) && error.code === "session_expired";
+        if (!inactive && !expired) throw error;
+      }
+      agent.newSession();
       setInput("");
       router.push("/");
     } catch {
@@ -89,28 +90,30 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
             Open demo site ↗
           </button>
           <div className="messages" aria-live="polite">
-            {agent.data.messages
+            {agent.messages
               .filter((message) => message.role === "user" || message.role === "assistant")
               .map((message) => (
                 <article key={message.id} className={message.role}>
                   <strong>{message.role === "user" ? "You" : "Bell"}</strong>
-                  {message.parts.map((part, index) =>
-                    part.type === "text" ? <p key={index}>{part.text}</p>
-                      : part.type === "authorization" ? (
-                        <section key={index}>
-                          {part.state === "completed" ? (
-                            <p>{part.outcome === "authorized" ? `${part.displayName} connected.` : `${part.displayName} authorization ${part.outcome}.`}</p>
-                          ) : (
-                            <>
-                              <p>{part.description}</p>
-                              {part.authorization?.url && (
-                                <a href={part.authorization.url} target="_blank" rel="noopener noreferrer">Connect {part.displayName}</a>
-                              )}
-                            </>
-                          )}
-                        </section>
-                      ) : null,
-                  )}
+                  {message.parts.map((part, index) => {
+                    if (part.type === "text") return <p key={index}>{part.text}</p>;
+                    const interaction = part.type === "interaction" ? part
+                      : part.type === "tool" ? part.interaction : undefined;
+                    if (!interaction || interaction.request.kind !== "sign-in") return null;
+                    const { request, outcome } = interaction;
+                    const name = request.signIn?.displayName ?? "Account";
+                    const url = request.link?.url ?? request.signIn?.url;
+                    return (
+                      <section key={index}>
+                        {outcome ? <p>{name} {signInEnding(outcome)}.</p> : (
+                          <>
+                            <p>{request.prompt}</p>
+                            {url && <a href={url} target="_blank" rel="noopener noreferrer">{request.link?.label ?? `Connect ${name}`}</a>}
+                          </>
+                        )}
+                      </section>
+                    );
+                  })}
                 </article>
               ))}
           </div>
@@ -123,8 +126,8 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
               {" "}<button type="button" disabled={waiting} onClick={() => void newConversation()}>Start a fresh conversation</button>
             </p>
           )}
-          {pending.map((request) => (
-            <fieldset key={request.requestId}>
+          {pending.map(({ interactionId, request }) => (
+            <fieldset key={interactionId}>
               <legend>{request.prompt}</legend>
               {request.options?.map((option) => (
                 <button
@@ -132,7 +135,7 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
                   type="button"
                   onClick={() =>
                     void agent
-                      .respond([{ requestId: request.requestId, optionId: option.id }])
+                      .respond([{ interactionId, optionId: option.id }])
                       .catch(() => setError("Reply failed. Please retry."))
                   }
                 >
@@ -148,12 +151,12 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
                     ).trim();
                     if (text)
                       void agent
-                        .respond([{ requestId: request.requestId, text }])
+                        .respond([{ interactionId, text }])
                         .catch(() => setError("Reply failed. Please retry."));
                   }}
                 >
-                  <label htmlFor={`reply-${request.requestId}`}>Your reply</label>
-                  <input id={`reply-${request.requestId}`} name="reply" required />
+                  <label htmlFor={`reply-${interactionId}`}>Your reply</label>
+                  <input id={`reply-${interactionId}`} name="reply" required />
                   <button>Reply</button>
                 </form>
               )}
@@ -177,7 +180,7 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
               <button type="submit" disabled={waiting || !input.trim()}>
                 Send
               </button>
-              {busy && (
+              {canStop && (
                 <button
                   type="button"
                   onClick={() =>
