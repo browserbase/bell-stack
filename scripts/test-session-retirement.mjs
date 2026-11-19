@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import Browserbase from "@browserbasehq/sdk";
-import { Client } from "eve/client";
+import { Client, ClientError, SessionNotActiveError } from "eve/client";
 import { calls, emptySessionView, foldEvents } from "eve/events";
 
 // Opt-in: requires a running local Bell and uses the configured model/browser.
@@ -41,10 +41,12 @@ try {
   assert.equal(second.status, "completed");
   assert.equal(browserIds.size, 1, "Follow-up must reuse the same hosted browser");
   const end = await session.end({ reason: "Completed browser retirement regression" });
-  assert.ok((await end.result({ signal: AbortSignal.timeout(20_000) })).sessionEnded);
-  const snapshot = await session.snapshot();
-  assert.ok(snapshot.events.some((event) => event.type === "session.ended" && event.data.outcome === "completed"),
-    "Ending the session must publish successful completion");
+  try {
+    const result = await end.result({ signal: AbortSignal.timeout(20_000) });
+    assert.ok(result.sessionEnded && result.status !== "failed");
+  } catch (error) {
+    if (!ClientError.is(error) || error.code !== "session_expired") throw error;
+  }
   for (const id of browserIds) {
     const deadline = Date.now() + 20_000;
     let status;
@@ -55,14 +57,14 @@ try {
     } while (Date.now() < deadline);
     assert.equal(status, "COMPLETED", "Ending the session must release the hosted browser");
   }
-  console.log("Live retirement passed: two turns shared one browser; ending emitted completion and Browserbase confirmed COMPLETED.");
+  console.log("Live retirement passed: two turns shared one browser; ending released it and Browserbase confirmed COMPLETED.");
 } finally {
   const cleanupErrors = [];
   if (session) {
     // Recover IDs even if a model assertion fails. Do not print private events.
     try { remember((await session.snapshot()).events); } catch { /* Session may not have started. */ }
     try { await session.end({ reason: "Integration test cleanup" }); }
-    catch { cleanupErrors.push("Eve session end failed"); }
+    catch (error) { if (!SessionNotActiveError.is(error)) cleanupErrors.push("Eve session end failed"); }
   }
   for (const id of browserIds) {
     try {

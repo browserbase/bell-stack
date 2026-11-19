@@ -4,7 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import Browserbase from "@browserbasehq/sdk";
 import { chromium } from "playwright-core";
-import { Client } from "eve/client";
+import { Client, ClientError, SessionNotActiveError } from "eve/client";
 import { calls, emptySessionView, foldEvents } from "eve/events";
 import { restrictBrowserRequests } from "./browser-test-auth.ts";
 
@@ -31,6 +31,7 @@ const directory = path.resolve(process.env.BELL_TEST_ARTIFACT_DIR || ".bell/para
 await mkdir(directory, { recursive: true, mode: 0o700 });
 const browser = await chromium.launch({ headless: true, ...(process.env.TEST_CHROME_PATH ? { executablePath: process.env.TEST_CHROME_PATH } : { channel: "chrome" }) });
 const toolCalls = (events) => calls(foldEvents(emptySessionView(), events), { kind: "tool" });
+const sessionExpired = error => ClientError.is(error) && error.code === "session_expired";
 const pause = () => new Promise(resolve => setTimeout(resolve, 250));
 async function until(check, message) {
   const deadline = Date.now() + 30_000;
@@ -146,11 +147,16 @@ async function workflow(index) {
     await page.getByRole("button", { name: "New conversation", exact: true }).click();
     await page.waitForURL(origin.origin + "/");
     await until(async () => {
-      const events = (await session.snapshot({ signal: AbortSignal.timeout(10_000) })).events;
-      remember(events);
-      const ended = events.find(event => event.type === "session.ended");
-      assert.ok(ended?.data.outcome !== "failed", "Conversation retirement failed");
-      return ended?.data.outcome === "completed";
+      try {
+        const events = (await session.snapshot({ signal: AbortSignal.timeout(10_000) })).events;
+        remember(events);
+        const ended = events.find(event => event.type === "session.ended");
+        assert.ok(ended?.data.outcome !== "failed", "Conversation retirement failed");
+        return ended?.data.outcome === "completed";
+      } catch (error) {
+        if (sessionExpired(error)) return true;
+        throw error;
+      }
     }, "New conversation must retire the previous Eve session");
     for (const id of hostedIds)
       await until(async () => (await browserbase.sessions.retrieve(id)).status === "COMPLETED", "New conversation must release its hosted browser without test intervention");
@@ -164,8 +170,8 @@ async function workflow(index) {
   } finally {
     const failures = [];
     if (session) {
-      try { remember((await session.snapshot({ signal: AbortSignal.timeout(10_000) })).events); } catch { failures.push("Could not recover final session events"); }
-      try { await session.end({ reason: "Parallel browser E2E cleanup", signal: AbortSignal.timeout(30_000) }); } catch { failures.push("Session end failed"); }
+      try { remember((await session.snapshot({ signal: AbortSignal.timeout(10_000) })).events); } catch (error) { if (!sessionExpired(error)) failures.push("Could not recover final session events"); }
+      try { await session.end({ reason: "Parallel browser E2E cleanup", signal: AbortSignal.timeout(30_000) }); } catch (error) { if (!SessionNotActiveError.is(error)) failures.push("Session end failed"); }
     }
     for (const id of hostedIds) {
       try {

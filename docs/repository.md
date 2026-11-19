@@ -89,4 +89,6 @@ Finish or end sessions on the old deployment before upgrading from Eve 0.79.1. T
 cannot move to the new deployment. Eve 1.1 also uses a new SQLite store for local runs,
 so start new local conversations after upgrading. Bell's Link and Notion grants live in
 PostgreSQL and can be reused in new conversations with the same verified identity
-and existing encryption keys. See the [Eve upgrade guide](https://eve.dev/docs/guides/upgrade).
+and existing encryption keys. Eve may expire transcripts for private sessions when
+they end, depending on the Workflow backend and retention policy. See the
+[Eve upgrade guide](https://eve.dev/docs/guides/upgrade).

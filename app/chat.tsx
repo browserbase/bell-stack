@@ -39,11 +39,7 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
     setRetiring(true);
     setError("");
     try {
-      if (agent.session || sessionId) {
-        const delivery = await agent.end();
-        const result = await delivery.result();
-        if (!result.sessionEnded) throw new Error("Conversation still active.");
-      }
+      if (agent.session || sessionId) await agent.end();
       agent.newSession();
       setInput("");
       router.push("/");
