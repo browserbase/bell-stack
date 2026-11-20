@@ -37,9 +37,9 @@ describe("resuming a browser after CAPTCHA handoff", () => {
         });
         expect(page.snapshot).not.toHaveBeenCalled();
 
-        await taskHooks.events!["message.received"]!({
-          type: "message.received", data: { message: "done" }, meta: { id: "new-reply" },
-        } as never, { session: { id } } as never);
+        await taskHooks.events!["delivery.consumed"]!({
+          type: "delivery.consumed", data: { deliveryId: "reply", turnId: "turn", parts: [{ kind: "text", text: "done" }] },
+        } as never, { session: { id }, occurrence: { idempotencyKey: "new-reply" }, now: new Date() } as never);
         expect(await runBrowserOperation(id, browser => browser.snapshot())).toMatchObject({
           result: { tree: "Account home", url: "https://shop.example/account" },
           workbench: { captcha: { status: "idle" } },
@@ -63,9 +63,9 @@ describe("resuming a browser after CAPTCHA handoff", () => {
       taskState.update(current => applyCaptchaTransition(current, {
         id: "challenge-error", type: "errored", at: new Date().toISOString(),
       }));
-      await taskHooks.events!["message.received"]!({
-        type: "message.received", data: { message: "done" }, meta: { id: "old-reply" },
-      } as never, { session: { id } } as never);
+      await taskHooks.events!["delivery.consumed"]!({
+        type: "delivery.consumed", data: { deliveryId: "reply", turnId: "turn", parts: [{ kind: "text", text: "done" }] },
+      } as never, { session: { id }, occurrence: { idempotencyKey: "old-reply" }, now: new Date() } as never);
       expect(taskState.get()).toMatchObject({ status: "waiting_for_user", captcha: { status: "errored" } });
     }));
 

@@ -56,7 +56,7 @@ const metadata = z.object({
   totals: z.array(total).optional(),
   approval_url: z.string().optional(),
   activity_url: z.string().optional(),
-  expires_at: z.number().optional(),
+  expires_at: z.iso.datetime().optional(),
   recurring: z.object({
     interval: z.string(),
     interval_count: z.number().optional(),
@@ -83,7 +83,7 @@ const metadata = z.object({
         display_message: z.string().optional(),
         action_url: z.string().nullable().optional(),
         resolution: z.string().optional(),
-        expires_at: z.number().nullable().optional(),
+        expires_at: z.iso.datetime().nullable().optional(),
       }).optional(),
     }).optional(),
   }).nullable().optional(),

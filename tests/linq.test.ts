@@ -5,6 +5,7 @@ import linq from "../agent/channels/linq";
 import { ContextContainer, contextStorage } from "../node_modules/eve/dist/src/context/container.js";
 import { SessionKey } from "../node_modules/eve/dist/src/context/keys.js";
 import type { ChannelAdapter } from "../node_modules/eve/dist/src/channel/adapter.js";
+import { signInFlow } from "./sign-in";
 
 const receivingNumber = "+12025550100";
 const senderNumber = "+12025550123";
@@ -125,14 +126,11 @@ describe("Bell's signed Linq webhook", () => {
     const context = new ContextContainer();
     context.set(SessionKey, { sessionId: "original-eve-session" } as never);
     await contextStorage.run(context, async () => {
-      await adapter["authorization.required"]!(
-        { name: "link", authorization } as never, channel as never,
-      );
+      const flow = signInFlow(adapter, channel, { name: "link", ...authorization });
+      await flow.open();
       expect(post).toHaveBeenCalledExactlyOnceWith({ markdown: expect.stringContaining(authorization.url) });
       expect(channel.state.pendingAuthMessageIds).toEqual({ link: "oauth-message" });
-      await adapter["authorization.completed"]!(
-        { name: "link", authorization, outcome: "authorized" } as never, channel as never,
-      );
+      await flow.settle();
     });
     expect(editMessage).toHaveBeenCalledWith("original-linq-chat", "oauth-message", { markdown: "Link connected." });
     expect(startTyping).toHaveBeenCalledWith("Connected. Resuming...");

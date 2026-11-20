@@ -41,7 +41,7 @@ described in its guide. Operator SDK/CLI access remains separate and is unavaila
 
 ## Development
 
-Use Node.js 24 and pnpm 10.33.4:
+Use Node.js 24 and pnpm 12.21.0:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -67,11 +67,10 @@ the Browserbase copyright and license terms covering the browser source.
 
 ## Browser retirement
 
-The HTTP and Linq channels release the hosted browser on terminal session events, including
-when cleanup runs in a fresh worker. Eve 0.79.1 skips global stream hooks for completion outside
-a turn, so cleanup uses channel callbacks. A failed release retains the browser ID and reaches
+The HTTP and Linq channels release the hosted browser on `session.ended`, including
+when cleanup runs in a fresh worker. A failed release retains the browser ID and reaches
 Eve's error logging; failed callbacks are not automatically retried. Starting a new conversation
-resets the prior session and releases its browser. Browserbase sessions still have provider
+ends the prior session and releases its browser. Browserbase sessions still have provider
 lifetimes, so this does not guarantee an indefinitely running browser.
 
 With Bell running locally and its provider credentials loaded, run the opt-in regression:
@@ -80,5 +79,5 @@ With Bell running locally and its provider credentials loaded, run the opt-in re
 BELL_LIVE_RETIREMENT=1 pnpm test:retirement:live
 ```
 
-The test opens example.com, checks browser reuse across two turns, resets the session, verifies
+The test opens example.com, checks browser reuse across two turns, ends the session, verifies
 provider release, and deletes its temporary Context. It uses the configured model and Browserbase.
