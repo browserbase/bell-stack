@@ -36,7 +36,7 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
     try {
       await agent.send(text.trim());
     } catch {
-      setError("The request failed. Check the local server and retry.");
+      setError("The request failed. If the development server restarted, start a fresh conversation.");
     }
   }
   async function newConversation() {
@@ -44,13 +44,14 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
     setRetiring(true);
     setError("");
     try {
-      if (agent.session)
-        await new Client({ host: "" }).sessions.attach(agent.session.sessionId).reset();
+      const activeSessionId = agent.session?.sessionId ?? sessionId;
+      if (activeSessionId)
+        await new Client({ host: "" }).sessions.attach(activeSessionId).reset();
       agent.reset();
       setInput("");
       router.push("/");
     } catch {
-      setError("Could not close this conversation. Please retry.");
+      setError("Could not close this conversation. Try again.");
     } finally {
       setRetiring(false);
     }
@@ -94,7 +95,21 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
                 <article key={message.id} className={message.role}>
                   <strong>{message.role === "user" ? "You" : "Bell"}</strong>
                   {message.parts.map((part, index) =>
-                    part.type === "text" ? <p key={index}>{part.text}</p> : null,
+                    part.type === "text" ? <p key={index}>{part.text}</p>
+                      : part.type === "authorization" ? (
+                        <section key={index}>
+                          {part.state === "completed" ? (
+                            <p>{part.outcome === "authorized" ? `${part.displayName} connected.` : `${part.displayName} authorization ${part.outcome}.`}</p>
+                          ) : (
+                            <>
+                              <p>{part.description}</p>
+                              {part.authorization?.url && (
+                                <a href={part.authorization.url} target="_blank" rel="noopener noreferrer">Connect {part.displayName}</a>
+                              )}
+                            </>
+                          )}
+                        </section>
+                      ) : null,
                   )}
                 </article>
               ))}
@@ -104,7 +119,8 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
           </p>
           {(error || agent.error) && (
             <p role="alert">
-              {error || "The agent request failed. Check server configuration and retry."}
+              {error || "The agent request failed. If the development server restarted, start a fresh conversation."}
+              {" "}<button type="button" disabled={waiting} onClick={() => void newConversation()}>Start a fresh conversation</button>
             </p>
           )}
           {pending.map((request) => (

@@ -128,6 +128,20 @@ invalidates pending consent attempts, and revokes the remote grant before removi
 If revocation fails, encrypted tokens remain for retrying disconnect and the wallet stays blocked.
 Disconnect does not cancel orders or merchant subscriptions or undo an already submitted purchase.
 
+## Personal purchase history
+
+Bell can save or update a purchase record in your chosen private Notion destination after
+checking the outcome. Your Notion setup choice controls whether Bell saves by default or
+only on request. The record includes known products and variants, quantity, merchant,
+actual amount and currency, observed dates, safe references, and verified status.
+Spend approval and submission alone do not establish a completed purchase; unresolved
+outcomes remain labeled as such, and sandbox tests stay separate from real ownership.
+
+Returns, deliveries and refunds update the same logical purchase when Bell receives verified
+information. A failed memory write never triggers another checkout. Link reports and Notion
+records serve separate purposes. This is agent-driven saving, not an automatic transaction
+sync or a crash-proof financial ledger. See [personal memory](notion.md).
+
 ## Real Link persistence and recovery
 
 Grants use `(issuer, principal ID)` from verified Linq authentication. They survive conversation
