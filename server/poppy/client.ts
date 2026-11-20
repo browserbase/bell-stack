@@ -1,12 +1,13 @@
 import {
-  companyIdentifier, companyProtocolVersion, DeviceSignInClient, McpSessionAuth,
+  companyIdentifier, companyProtocolVersion, DeviceSignInClient,
   PapSession, PersonalAgentProtocolError, RefreshTokenClient, requireOauth,
-  scopeDescriptions, scopesSupported, ServiceTokens, SessionClient, signInTypes,
-  type DiscoveredCompany, type RefreshTokenContext,
+  scopeDescriptions, scopesSupported, serviceMetadata, SessionClient, signInTypes,
+  type AccessToken, type DiscoveredCompany, type RefreshTokenContext,
 } from "@datalayer/personal-agent-protocol";
 import { readMcp } from "./apis";
 import { getPoppyIdentity, type PoppyIdentity } from "./identity";
-import { createPoppyRuntime, discoverPoppy } from "./sdk";
+import { PoppyRateLimitedError, poppyRateLimit, rateLimitedResult } from "./limits";
+import { createPoppyRuntime, createSessionFetch, discoverPoppy } from "./sdk";
 import { getPoppyStore, sdkStores, type PoppyCompanyState, type PoppyStore } from "./store";
 
 type Runtime = ReturnType<typeof createPoppyRuntime>;
@@ -32,6 +33,9 @@ export class PoppyClient {
   private async protect<T>(action: () => Promise<T>): Promise<T> {
     try { return await action(); }
     catch (error) {
+      // Checked first: SDK errors may wrap it. Its message carries only the wait time.
+      const limited = poppyRateLimit(error);
+      if (limited) throw limited;
       if (error instanceof PersonalAgentProtocolError) {
         const code = /^[a-z_]{1,64}$/.test(error.code) ? error.code : "protocol_error";
         throw new Error(code === "unsupported_protocol_version"
@@ -77,7 +81,34 @@ export class PoppyClient {
     return this.useApi(owner, conversation, url, api, operation, parameters, signal);
   }
 
-  private useApi(owner: string, conversation: string, url: string, index: number,
+  // A credential mutation that fails ambiguously leaves the account blocked until disconnect.
+  // A rate-limit refusal is explicit, so nothing changed and the account stays usable.
+  private async checkpoint<T>(state: PoppyCompanyState, save: () => Promise<void>, mutation: () => Promise<T>): Promise<T> {
+    state.blocked = true;
+    await save();
+    try {
+      const result = await mutation();
+      state.blocked = false;
+      return result;
+    } catch (error) {
+      if (poppyRateLimit(error)) {
+        state.blocked = false;
+        await save();
+      }
+      throw error;
+    }
+  }
+
+  private async useApi(owner: string, conversation: string, url: string, index: number,
+    operation: string | undefined, parameters: Record<string, unknown>, signal?: AbortSignal) {
+    try { return await this.useApiOnce(owner, conversation, url, index, operation, parameters, signal); }
+    catch (error) {
+      if (error instanceof PoppyRateLimitedError) return rateLimitedResult(error);
+      throw error;
+    }
+  }
+
+  private useApiOnce(owner: string, conversation: string, url: string, index: number,
     operation: string | undefined, parameters: Record<string, unknown>, signal?: AbortSignal) {
     return this.withCompany(owner, url, signal, async (company, state, save, runtime) => {
       const api = apiAt(company, index);
@@ -89,22 +120,33 @@ export class PoppyClient {
       if (Object.keys(state.sessions).length >= 100) delete state.sessions[Object.keys(state.sessions)[0]];
       state.sessions[key] = session.toJson();
       await save();
-      let token;
+      let token: AccessToken | undefined;
       if (state.grant) {
+        const reference = state.grant.reference;
+        // Reading resource metadata changes no credentials, so it happens before the checkpoint.
+        const server = await serviceMetadata(company, api.url, runtime.discovery);
+        const refresh = new RefreshTokenClient(runtime);
+        const context = accountContext(company, this.identity.clientId, state);
         // A process/storage failure during credential mutation must not replay an old grant.
-        state.blocked = true;
-        await save();
-        token = await new ServiceTokens({ refresh: new RefreshTokenClient(runtime), company,
-          reference: state.grant.reference, context: accountContext(company, this.identity.clientId, state),
-          discovery: runtime.discovery }).tokenFor(api.url);
-        state.blocked = false;
+        const result = await this.checkpoint(state, save, () => server
+          ? refresh.tokenForMcp(reference, { context, server })
+          : refresh.refresh(reference, { context }));
+        token = result.status === "signed_in" ? result.token : undefined;
         if (!token) delete state.grant;
         await save();
         if (!token) return { error: "auth_required", message: "Reconnect this account before reading." };
       }
-      const auth = new McpSessionAuth(api.url, { ...runtime, session, token });
+      const fetch = createSessionFetch(api.url, runtime, session, token);
       runtime.secrets.push(...Object.values(state.tokens), ...(token ? [token.accessToken.reveal()] : []));
-      return readMcp({ url: api.url, fetch: auth.fetch, signal, operation, parameters, secrets: runtime.secrets });
+      try {
+        return await readMcp({ url: api.url, fetch, signal, operation, parameters, secrets: runtime.secrets });
+      } finally {
+        // After session_ended the SDK restarted this Session once; later reads reuse the new ID.
+        if (state.sessions[key]?.sid !== session.sid) {
+          state.sessions[key] = session.toJson();
+          await save();
+        }
+      }
     });
   }
 
@@ -138,10 +180,8 @@ export class PoppyClient {
     return this.withCompany(owner, url, signal, async (_company, state, save, runtime) => {
       if (state.blocked) return { status: "recovery_required", message: "Disconnect, then connect again." };
       if (!state.device) return { status: state.grant ? "connected" : "disconnected", scopes: state.grant?.scopes ?? [] };
-      state.blocked = true;
-      await save();
-      const result = await new DeviceSignInClient(runtime).poll(state.device.reference, signal);
-      state.blocked = false;
+      const device = state.device.reference;
+      const result = await this.checkpoint(state, save, () => new DeviceSignInClient(runtime).poll(device, signal));
       if (result.status === "pending") return { status: "pending", retryAt: result.retryAt?.toISOString() };
       if (!result.refreshTokenReference) throw new Error("Bell did not receive persistent account access.");
       state.grant = { reference: result.refreshTokenReference, scopes: [...result.grantedScopes] };

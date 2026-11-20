@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Tool } from "@modelcontextprotocol/client";
 import { readMcp } from "../server/poppy/apis.js";
+import { PoppyRateLimitedError } from "../server/poppy/limits.js";
 
 const url = "https://catalog.example/mcp";
 const search: Tool = {
@@ -113,6 +114,18 @@ describe("Bell's MCP adapter", () => {
     const result = await readMcp({ url, fetch: http.fetch, operation: "search", parameters: { query: "milk" } });
     expect(result).toMatchObject({ truncated: true, data: { preview: expect.any(String) } });
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(32 * 1024);
+  });
+
+  it("returns the provider's retry timing instead of a generic API error", async () => {
+    const methods: string[] = [];
+    const fetch: typeof globalThis.fetch = async (_input, init) => {
+      methods.push(JSON.parse(String(init?.body ?? "{}")).method);
+      throw new Error("transport failed", { cause: new PoppyRateLimitedError(60, methods.length === 1) });
+    };
+    expect(await readMcp({ url, fetch })).toEqual({
+      error: "rate_limited", retryAfterSeconds: 60, message: expect.stringContaining("Retry after 60 seconds"),
+    });
+    expect(methods).not.toContain("tools/list");
   });
 
   it("does not expose transport failure bodies to the model", async () => {

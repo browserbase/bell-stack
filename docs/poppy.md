@@ -36,6 +36,12 @@ Connecting and disconnecting accounts require approval in Bell. Complete sign-in
 on the provider's website, then return to the conversation. Disconnect before
 changing scopes or reconnecting after interrupted credential updates.
 
+When a provider ends a session, Bell starts one replacement session through the
+SDK, retries the request once, and keeps the new session for later reads. When a
+provider answers `429` (or `503` with `Retry-After`), Bell pauses every request to
+that provider's origin for the requested time (at most one hour), across tool calls, and returns
+`rate_limited` with `retryAfterSeconds`. The pause is kept in process memory.
+
 ## Limits
 
 Use providers you trust with the requested data. Read-only annotations are provider

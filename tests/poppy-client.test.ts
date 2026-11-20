@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeJwt } from "jose";
 import { PoppyClient } from "../server/poppy/client";
 import { PoppyIdentity } from "../server/poppy/identity";
+import { resetPoppyRateLimits } from "../server/poppy/limits";
 import { PoppyStore } from "../server/poppy/store";
 
 const network = vi.hoisted(() => ({ fetch: undefined as typeof globalThis.fetch | undefined }));
@@ -24,7 +25,10 @@ const privateValues = ["private-device-code", "private-initial-access", "private
 
 function provider() {
   const requests: { url: string; method: string; headers: Headers; body: string }[] = [];
-  const state = { approved: false, version: "0.4", refreshes: 0, failRefresh: false, failRevoke: false };
+  const state = {
+    approved: false, version: "0.4", refreshes: 0, failRefresh: false, failRevoke: false,
+    failMetadata: 0, rateLimitMcp: 0, endedSessions: new Set<string>(), sessionEndedAnswers: 0,
+  };
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
     const body = await request.text();
@@ -35,6 +39,10 @@ function provider() {
       apis: [{ type: "mcp", url: mcp, description: "Read catalog data" }],
     });
     if (request.url === `${company}/.well-known/oauth-protected-resource`) return Response.json({ resource: company, authorization_servers: [issuer] });
+    if (request.url === `${company}/.well-known/oauth-protected-resource/mcp` && state.failMetadata > 0) {
+      state.failMetadata--;
+      return Response.json({ error: "temporarily_unavailable" }, { status: 503 });
+    }
     if (request.url === `${company}/.well-known/oauth-protected-resource/mcp`) return Response.json({ resource: mcp, authorization_servers: [issuer] });
     if (request.url === `${issuer}/.well-known/oauth-authorization-server`) return Response.json({
       issuer, protected_resources: [company], token_endpoint: `${issuer}/token`, revocation_endpoint: `${issuer}/revoke`,
@@ -59,6 +67,14 @@ function provider() {
       : new Response(null, { status: 200 });
     if (request.url === mcp) {
       if (!request.headers.has("authorization")) return new Response("private provider detail", { status: 401 });
+      if (state.rateLimitMcp > 0) {
+        state.rateLimitMcp--;
+        return new Response("slow down", { status: 429, headers: { "retry-after": "60" } });
+      }
+      if (state.endedSessions.has(String(decodeJwt(request.headers.get("poppy-session")!).sid))) {
+        state.sessionEndedAnswers++;
+        return Response.json({ error: "session_ended" }, { status: 400 });
+      }
       if (request.method === "GET") return new Response(null, { status: 405 });
       const rpc = JSON.parse(body);
       if (rpc.method === "notifications/initialized") return new Response(null, { status: 202 });
@@ -101,6 +117,7 @@ beforeEach(async () => {
   network.fetch = remote.fetch;
 });
 afterEach(async () => {
+  resetPoppyRateLimits();
   vi.useRealTimers();
   await rm(directory, { recursive: true, force: true });
 });
@@ -183,6 +200,60 @@ describe("Bell's SDK-backed Poppy accounts", () => {
     expect(tokenRequests).toHaveLength(1);
     expect(new URLSearchParams(tokenRequests[0].body).get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:device_code");
     expect(remote.state.failRefresh).toBe(true);
+  });
+
+  it("replaces an ended Session once and reuses the replacement for later reads", async () => {
+    await signedIn();
+    expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ data: { items: ["milk"] } });
+    const sid = (from: number) => remote.requests.slice(from).filter(entry => entry.url === mcp)
+      .map(entry => String(decodeJwt(entry.headers.get("poppy-session")!).sid));
+    const [ended] = sid(0);
+    remote.state.endedSessions.add(ended);
+
+    const firstAt = remote.requests.length;
+    expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ data: { items: ["milk"] } });
+    expect(remote.state.sessionEndedAnswers).toBe(1);
+    const replacement = sid(firstAt).at(-1)!;
+    expect(replacement).not.toBe(ended);
+
+    const secondAt = remote.requests.length;
+    expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ data: { items: ["milk"] } });
+    expect(remote.state.sessionEndedAnswers).toBe(1);
+    expect(new Set(sid(secondAt))).toEqual(new Set([replacement]));
+  });
+
+  it("keeps the account usable when resource metadata is temporarily unavailable", async () => {
+    await signedIn();
+    remote.state.failMetadata = 1;
+    const before = remote.requests.length;
+    await expect(client().read("owner-a", "conversation", company, 0, "search", {})).rejects.toThrow("Poppy SDK request failed");
+    expect(remote.requests.slice(before).filter(entry => [mcp, `${issuer}/token`].includes(entry.url))).toEqual([]);
+    expect(await client().status("owner-a", company)).toMatchObject({ status: "connected", scopes: [scope] });
+    expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ data: { items: ["milk"] } });
+  });
+
+  it("honors a provider's Retry-After across fallback requests and separate tool calls", async () => {
+    await signedIn();
+    remote.state.rateLimitMcp = 1;
+    const mcpCalls = (from: number) => remote.requests.slice(from).filter(entry => entry.url === mcp);
+    const firstAt = remote.requests.length;
+    const limited = { error: "rate_limited", retryAfterSeconds: 60, message: expect.stringContaining("Retry after 60 seconds") };
+    expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject(limited);
+    // The MCP SDK's initialize fallback after server/discover is refused locally.
+    expect(mcpCalls(firstAt)).toHaveLength(1);
+    expect(JSON.parse(mcpCalls(firstAt)[0].body).method).toBe("server/discover");
+
+    // The pause covers the provider's origin, like the SDK's shared budget, for every later tool call.
+    vi.setSystemTime(Date.now() + 30_000);
+    const secondAt = remote.requests.length;
+    expect(await client().read("owner-a", "other-conversation", company, 0, "search", {})).toMatchObject({ error: "rate_limited", retryAfterSeconds: 30, message: expect.stringContaining("Retry after 30 seconds") });
+    await expect(client().status("owner-a", company)).rejects.toThrow("Retry after 30 seconds");
+    await expect(client().discover(company)).rejects.toThrow("Retry after 30 seconds");
+    expect(remote.requests.slice(secondAt)).toEqual([]);
+
+    vi.setSystemTime(Date.now() + 31_000);
+    expect(await client().status("owner-a", company)).toMatchObject({ status: "connected" });
+    expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ data: { items: ["milk"] } });
   });
 
   it("reports the installed SDK's unsupported version without a local compatibility implementation", async () => {

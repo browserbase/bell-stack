@@ -3,12 +3,13 @@ import {
   type JsonSchemaType, type Tool,
 } from "@modelcontextprotocol/client";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
+import { poppyRateLimit, rateLimitedResult, type PoppyRateLimited } from "./limits";
 
 type JsonObject = Record<string, unknown>;
 export type PoppyApiFailure = {
   error: "auth_required" | "insufficient_scope" | "api_error" | "invalid_parameters";
   message: string;
-};
+} | PoppyRateLimited;
 export type PoppyApiOperation = { id: string; description?: string; parameters: JsonObject };
 export type PoppyApiDescription = { type: "mcp"; resource: string; operations: PoppyApiOperation[]; truncated?: boolean };
 export type PoppyApiResult = { resource: string; operation: string; data: unknown; truncated?: boolean };
@@ -99,6 +100,9 @@ export async function readMcp({ url, fetch, signal, operation, parameters = {}, 
     if (result.isError) return { error: "api_error", message: "The provider could not complete this read operation." };
     return boundedResult({ resource: url, operation, data: result.structuredContent !== undefined ? result.structuredContent : { content: result.content } }, secrets);
   } catch (error) {
+    // The provider's Retry-After stops the SDK's fallback requests; report when to retry.
+    const limited = poppyRateLimit(error);
+    if (limited) return rateLimitedResult(limited);
     if (error instanceof UnauthorizedError || error instanceof SdkHttpError && error.status === 401) {
       return { error: "auth_required", message: "This API requires account access or an accepted agent identity." };
     }

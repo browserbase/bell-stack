@@ -1,10 +1,11 @@
 import {
-  AuthorizationStateStores, SessionSigners, Signers, TokenStores,
-  buildPapReactor, discoverCompany, type DiscoveredCompany, type DiscoveryOptions,
+  AuthorizationStateStores, SessionFetchClient, SessionSigners, Signers, TokenStores,
+  buildPapReactor, discoverCompany, type AccessToken, type DiscoveredCompany, type DiscoveryOptions, type PapSession,
 } from "@datalayer/personal-agent-protocol";
 import { createResolvingFetch, NodeUrlSafetyPolicy } from "@datalayer/personal-agent-protocol/server";
-import { contribution, definePlugin } from "@datalayer/reactor";
+import { contribution, definePlugin, type ReactorPlatformView } from "@datalayer/reactor";
 import type { PoppyIdentity } from "./identity";
+import { afterPoppyResponse, beforePoppyRequest } from "./limits";
 import type { PoppySdkStores } from "./store";
 
 const MAX_REQUEST_BYTES = 256 * 1024;
@@ -46,9 +47,12 @@ function createTransport(signal?: AbortSignal) {
     }
     const body = request.body ? await beforeAbort(request.arrayBuffer(), deadline) : undefined;
     if (body && body.byteLength > MAX_REQUEST_BYTES) throw new Error("Poppy request exceeds Bell's size limit.");
+    // Every Poppy request (discovery, OAuth, MCP) honors the provider's Retry-After, across tool calls.
+    await beforePoppyRequest(request.url);
     const response = await beforeAbort(pinnedFetch(request.url, {
       method: request.method, headers: request.headers, body, signal: deadline, redirect: "manual", credentials: "omit",
     }), deadline);
+    await afterPoppyResponse(request.url, response);
     let bytes = 0;
     const stream = response.body?.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
@@ -75,6 +79,29 @@ export function createPoppyRuntime(identity: PoppyIdentity, stores: PoppySdkStor
   })]);
   const discovery: DiscoveryOptions = { reactor, fetch, signal, maxResponseBytes: MAX_RESPONSE_BYTES, timeoutMs: REQUEST_TIMEOUT_MS };
   return { reactor, fetch, discovery, secrets };
+}
+
+/**
+ * MCP fetch for one server URL. The SDK transport signs each request, and after `session_ended`
+ * starts one replacement Session (`session.restart()`) and resends; callers persist `session`.
+ */
+export function createSessionFetch(url: string, runtime: { reactor: ReactorPlatformView; fetch: typeof globalThis.fetch },
+  session: PapSession, token?: AccessToken): typeof globalThis.fetch {
+  const target = new URL(url);
+  target.hash = "";
+  if (target.protocol !== "https:") throw new Error("Bell sends Poppy credentials only over HTTPS.");
+  if (token !== undefined && token.resource !== url) throw new Error("Bell sends an MCP token only to the server it was issued for.");
+  const client = new SessionFetchClient({ reactor: runtime.reactor, fetch: runtime.fetch });
+  return async (input, init) => {
+    const request = new Request(input, init);
+    const requested = new URL(request.url);
+    requested.hash = "";
+    if (requested.href !== target.href) throw new Error("Bell sends Poppy credentials only to the selected MCP URL.");
+    const body = request.body ? await request.text() : undefined;
+    return client.request(request.method, requested.href, {
+      session, token, headers: Object.fromEntries(request.headers), body, ...(init?.signal ? { signal: init.signal } : {}),
+    });
+  };
 }
 
 export async function discoverPoppy(value: string, signal?: AbortSignal): Promise<DiscoveredCompany> {
