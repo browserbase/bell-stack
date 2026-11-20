@@ -120,7 +120,7 @@ describe("Bell's MCP adapter", () => {
     const methods: string[] = [];
     const fetch: typeof globalThis.fetch = async (_input, init) => {
       methods.push(JSON.parse(String(init?.body ?? "{}")).method);
-      throw new Error("transport failed", { cause: new PoppyRateLimitedError(60, methods.length === 1) });
+      throw new Error("transport failed", { cause: new PoppyRateLimitedError(60, 429) });
     };
     expect(await readMcp({ url, fetch })).toEqual({
       error: "rate_limited", retryAfterSeconds: 60, message: expect.stringContaining("Retry after 60 seconds"),

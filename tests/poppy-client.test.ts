@@ -27,7 +27,7 @@ function provider() {
   const requests: { url: string; method: string; headers: Headers; body: string }[] = [];
   const state = {
     approved: false, version: "0.4", refreshes: 0, failRefresh: false, failRevoke: false,
-    failMetadata: 0, rateLimitMcp: 0, endedSessions: new Set<string>(), sessionEndedAnswers: 0,
+    failMetadata: 0, rateLimitMcp: 0, retryAfter: 60, endedSessions: new Set<string>(), sessionEndedAnswers: 0,
   };
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
@@ -69,7 +69,7 @@ function provider() {
       if (!request.headers.has("authorization")) return new Response("private provider detail", { status: 401 });
       if (state.rateLimitMcp > 0) {
         state.rateLimitMcp--;
-        return new Response("slow down", { status: 429, headers: { "retry-after": "60" } });
+        return new Response("slow down", { status: 429, headers: { "retry-after": String(state.retryAfter) } });
       }
       if (state.endedSessions.has(String(decodeJwt(request.headers.get("poppy-session")!).sid))) {
         state.sessionEndedAnswers++;
@@ -232,19 +232,20 @@ describe("Bell's SDK-backed Poppy accounts", () => {
     expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ data: { items: ["milk"] } });
   });
 
-  it("honors a provider's Retry-After across fallback requests and separate tool calls", async () => {
+  it.each([60, 7200])("honors Retry-After: %i across fallback requests and separate tool calls", async seconds => {
     await signedIn();
     remote.state.rateLimitMcp = 1;
+    remote.state.retryAfter = seconds;
     const mcpCalls = (from: number) => remote.requests.slice(from).filter(entry => entry.url === mcp);
     const firstAt = remote.requests.length;
-    const limited = { error: "rate_limited", retryAfterSeconds: 60, message: expect.stringContaining("Retry after 60 seconds") };
+    const limited = { error: "rate_limited", retryAfterSeconds: seconds, message: expect.stringContaining(`Retry after ${seconds} seconds`) };
     expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject(limited);
     // The MCP SDK's initialize fallback after server/discover is refused locally.
     expect(mcpCalls(firstAt)).toHaveLength(1);
     expect(JSON.parse(mcpCalls(firstAt)[0].body).method).toBe("server/discover");
 
     // The pause covers the provider's origin, like the SDK's shared budget, for every later tool call.
-    vi.setSystemTime(Date.now() + 30_000);
+    vi.setSystemTime(Date.now() + (seconds - 30) * 1000);
     const secondAt = remote.requests.length;
     expect(await client().read("owner-a", "other-conversation", company, 0, "search", {})).toMatchObject({ error: "rate_limited", retryAfterSeconds: 30, message: expect.stringContaining("Retry after 30 seconds") });
     await expect(client().status("owner-a", company)).rejects.toThrow("Retry after 30 seconds");
@@ -254,6 +255,45 @@ describe("Bell's SDK-backed Poppy accounts", () => {
     vi.setSystemTime(Date.now() + 31_000);
     expect(await client().status("owner-a", company)).toMatchObject({ status: "connected" });
     expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ data: { items: ["milk"] } });
+  });
+
+  it.each([429, 503])("preserves the correct refresh recovery state after HTTP %i", async status => {
+    await signedIn();
+    let exchanges = 0;
+    network.fetch = async (input, init) => {
+      if (String(input) !== `${issuer}/token` || exchanges++ > 0) return remote.fetch(input, init);
+      // A proxy can return 503 after the issuer has already consumed the refresh token.
+      if (status === 503) await remote.fetch(input, init);
+      return new Response(null, { status, headers: { "retry-after": "60" } });
+    };
+    expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ error: "rate_limited", retryAfterSeconds: 60 });
+    vi.setSystemTime(Date.now() + 61_000);
+    expect(await client().status("owner-a", company)).toMatchObject({ status: status === 503 ? "recovery_required" : "connected" });
+    if (status === 503) {
+      await expect(client().read("owner-a", "conversation", company, 0, "search", {})).rejects.toThrow("needs recovery");
+      expect(exchanges).toBe(1);
+      await client().disconnect("owner-a", company);
+      await signedIn();
+    }
+    expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ data: { items: ["milk"] } });
+  });
+
+  it("stops negotiation when the replacement Session is also rejected", async () => {
+    await signedIn();
+    const attempts: { method: string; sid: unknown }[] = [];
+    network.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url !== mcp) return remote.fetch(input, init);
+      attempts.push({ method: JSON.parse(await request.text()).method, sid: decodeJwt(request.headers.get("poppy-session")!).sid });
+      return Response.json({ error: "session_ended" }, { status: 400 });
+    };
+    expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ error: "api_error" });
+    expect(attempts).toHaveLength(2);
+    expect(new Set(attempts.map(attempt => attempt.method))).toEqual(new Set(["server/discover"]));
+    expect(new Set(attempts.map(attempt => attempt.sid)).size).toBe(attempts.length);
+    network.fetch = remote.fetch;
+    expect(await client().read("owner-a", "conversation", company, 0, "search", {})).toMatchObject({ data: { items: ["milk"] } });
+    expect(decodeJwt(remote.requests.filter(entry => entry.url === mcp).at(-1)!.headers.get("poppy-session")!).sid).toBe(attempts.at(-1)!.sid);
   });
 
   it("reports the installed SDK's unsupported version without a local compatibility implementation", async () => {

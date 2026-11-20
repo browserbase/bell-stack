@@ -82,7 +82,7 @@ export class PoppyClient {
   }
 
   // A credential mutation that fails ambiguously leaves the account blocked until disconnect.
-  // A rate-limit refusal is explicit, so nothing changed and the account stays usable.
+  // Only a local refusal or 429 proves the mutation was refused; a 503 may follow rotation.
   private async checkpoint<T>(state: PoppyCompanyState, save: () => Promise<void>, mutation: () => Promise<T>): Promise<T> {
     state.blocked = true;
     await save();
@@ -91,7 +91,8 @@ export class PoppyClient {
       state.blocked = false;
       return result;
     } catch (error) {
-      if (poppyRateLimit(error)) {
+      const limited = poppyRateLimit(error);
+      if (limited && limited.status !== 503) {
         state.blocked = false;
         await save();
       }

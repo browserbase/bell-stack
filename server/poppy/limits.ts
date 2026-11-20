@@ -1,13 +1,12 @@
 import { budgetKey, parseRetryAfter, PersonalAgentProtocolError, SharedRateLimitBudget } from "@datalayer/personal-agent-protocol";
 
 const DEFAULT_RETRY_AFTER_SECONDS = 30;
-const MAX_RETRY_AFTER_SECONDS = 60 * 60;
 
 export type PoppyRateLimited = { error: "rate_limited"; message: string; retryAfterSeconds: number };
 
-/** A provider asked Bell to wait. `sent` is false when Bell refused locally without a request. */
+/** A provider asked Bell to wait. An absent status means Bell refused locally. */
 export class PoppyRateLimitedError extends Error {
-  constructor(readonly retryAfterSeconds: number, readonly sent: boolean) {
+  constructor(readonly retryAfterSeconds: number, readonly status?: 429 | 503) {
     super(`Bell is pausing requests to this Poppy provider at its request. Retry after ${retryAfterSeconds} seconds.`);
     this.name = "PoppyRateLimitedError";
   }
@@ -25,7 +24,7 @@ export async function beforePoppyRequest(url: string): Promise<void> {
   catch (error) {
     if (!(error instanceof PersonalAgentProtocolError) || error.code !== "rate_limited") throw error;
     const seconds = Number(error.details?.retry_after);
-    throw new PoppyRateLimitedError(Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : 1, false);
+    throw new PoppyRateLimitedError(Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : 1);
   }
 }
 
@@ -34,10 +33,10 @@ export async function afterPoppyResponse(url: string, response: Response): Promi
   if (response.status !== 429 && response.status !== 503) return;
   const requested = parseRetryAfter(response.headers.get("retry-after"), new Date());
   if (requested === undefined && response.status === 503) return;
-  const seconds = Math.min(MAX_RETRY_AFTER_SECONDS, Math.max(1, Math.ceil(requested ?? DEFAULT_RETRY_AFTER_SECONDS)));
+  const seconds = Math.max(1, Math.ceil(requested ?? DEFAULT_RETRY_AFTER_SECONDS));
   await budget.defer(budgetKey(url), seconds);
   await response.body?.cancel().catch(() => undefined);
-  throw new PoppyRateLimitedError(seconds, true);
+  throw new PoppyRateLimitedError(seconds, response.status);
 }
 
 /** The rate-limit refusal behind an error, including one wrapped by an SDK. */

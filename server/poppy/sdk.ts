@@ -1,5 +1,5 @@
 import {
-  AuthorizationStateStores, SessionFetchClient, SessionSigners, Signers, TokenStores,
+  AuthorizationStateStores, SessionFetchClient, SessionSigners, Signers, TokenStores, sessionEnded, TransportError,
   buildPapReactor, discoverCompany, type AccessToken, type DiscoveredCompany, type DiscoveryOptions, type PapSession,
 } from "@datalayer/personal-agent-protocol";
 import { createResolvingFetch, NodeUrlSafetyPolicy } from "@datalayer/personal-agent-protocol/server";
@@ -98,9 +98,14 @@ export function createSessionFetch(url: string, runtime: { reactor: ReactorPlatf
     requested.hash = "";
     if (requested.href !== target.href) throw new Error("Bell sends Poppy credentials only to the selected MCP URL.");
     const body = request.body ? await request.text() : undefined;
-    return client.request(request.method, requested.href, {
+    const response = await client.request(request.method, requested.href, {
       session, token, headers: Object.fromEntries(request.headers), body, ...(init?.signal ? { signal: init.signal } : {}),
     });
+    if (await sessionEnded(response)) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new TransportError("session_ended", "Poppy rejected the replacement Session; stop MCP negotiation.");
+    }
+    return response;
   };
 }
 
