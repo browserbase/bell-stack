@@ -24,7 +24,7 @@ function assertNoSecrets(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   for (const [key, secret] of secrets) assert.ok(!text.includes(secret), `${key} must not appear in conversation data or rendered HTML.`);
 }
-const client = new Client({ host: origin.origin, headers, redirect: "error" });
+const client = new Client({ baseUrl: origin.origin, headers, redirect: "error" });
 const browserbase = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY, timeout: 10_000, maxRetries: 0 });
 const directory = path.resolve(process.env.BELL_TEST_ARTIFACT_DIR || ".bell/parallel-e2e", randomUUID());
 await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -86,7 +86,8 @@ async function workflow(index) {
   let session, stage = "session creation";
   const remember = events => {
     for (const event of events) {
-      const state = event.data?.result?.output?.workbench?.browser;
+      if (event.type !== "call.settled") continue;
+      const state = event.data.output?.workbench?.browser;
       if (state?.sessionId) hostedIds.add(state.sessionId);
       if (state?.contextId && state.contextStatus === "draft") contextIds.add(state.contextId);
     }
@@ -111,12 +112,15 @@ async function workflow(index) {
     remember(snapshot.events);
     assertNoSecrets(snapshot);
     assertNoSecrets(await page.content());
-    const calls = snapshot.events.filter(event => event.type === "action.result").map(event => event.data?.result);
+    const requested = new Map(snapshot.events.filter(event => event.type === "call.requested")
+      .map(({ data }) => [data.callId, data.capability.name]));
+    const calls = snapshot.events.filter(event => event.type === "call.settled")
+      .map(({ data }) => ({ ...data, toolName: requested.get(data.callId) }));
     assert.equal(calls.length, 4, "Only the four requested tools may run.");
     for (const name of ["web_search", "web_fetch", "run", "snapshot"]) {
       const matching = calls.filter(call => call?.toolName === name);
       assert.equal(matching.length, 1, `${name} must run exactly once`);
-      assert.ok(!matching[0].isError, `${name} must succeed`);
+      assert.equal(matching[0].outcome, "completed", `${name} must succeed`);
     }
     const answer = await page.locator(".messages article.assistant").last().innerText();
     for (const name of ["web_search", "web_fetch"]) {
@@ -146,8 +150,10 @@ async function workflow(index) {
     await until(async () => {
       const events = (await session.snapshot({ signal: AbortSignal.timeout(10_000) })).events;
       remember(events);
-      assert.ok(!events.some(event => event.type === "session.failed"), "Conversation retirement failed");
-      return events.some(event => event.type === "session.completed");
+      const ended = events.find(event => event.type === "session.ended");
+      if (!ended) return false;
+      assert.equal(ended.data.outcome, "completed", "Conversation retirement failed");
+      return true;
     }, "New conversation must retire the previous Eve session");
     for (const id of hostedIds)
       await until(async () => (await browserbase.sessions.retrieve(id)).status === "COMPLETED", "New conversation must release its hosted browser without test intervention");
@@ -162,7 +168,7 @@ async function workflow(index) {
     const failures = [];
     if (session) {
       try { remember((await session.snapshot({ signal: AbortSignal.timeout(10_000) })).events); } catch { failures.push("Could not recover final session events"); }
-      try { await session.reset({ reason: "Parallel browser E2E cleanup", signal: AbortSignal.timeout(30_000) }); } catch { failures.push("Session reset failed"); }
+      try { await session.end({ reason: "Parallel browser E2E cleanup", signal: AbortSignal.timeout(30_000) }); } catch { failures.push("Session end failed"); }
     }
     for (const id of hostedIds) {
       try {

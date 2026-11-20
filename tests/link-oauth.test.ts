@@ -15,6 +15,7 @@ import { createAuthorizationExecution } from "../node_modules/eve/dist/src/runti
 import { resolveWorkflowCallbackBaseUrl } from "../node_modules/eve/dist/src/execution/workflow-callback-url.js";
 import type { ChannelAdapter } from "../node_modules/eve/dist/src/channel/adapter.js";
 import linq from "../agent/channels/linq";
+import { signInFlow } from "./sign-in";
 
 const databaseUrl = process.env.TEST_LINK_DATABASE_URL;
 
@@ -339,7 +340,8 @@ describe.skipIf(!databaseUrl)("Link OAuth with PostgreSQL", () => {
       if (!isAuthorizationSignal(signal)) throw new Error("Expected Eve to suspend for consent.");
       const challenge = signal.challenges[0];
       expect(new URL(challenge.hookUrl).origin).toBe(environment === "production" ? "https://bell-project.vercel.app" : "http://127.0.0.1:54321");
-      await adapter["authorization.required"]!({ name: challenge.name, authorization: challenge.challenge } as never, channel as never);
+      const flow = signInFlow(adapter, channel, { name: challenge.name, ...challenge.challenge });
+      await flow.open();
       expect(post).toHaveBeenCalledWith({ markdown: expect.stringContaining("https://login.link.com/auth?") });
       const state = new URL(challenge.challenge.url!).searchParams.get("state")!;
       const response = await linkCallback(new Request(`${config.redirectUri}?state=${state}&code=runtime-code`), () => service);
@@ -355,7 +357,7 @@ describe.skipIf(!databaseUrl)("Link OAuth with PostgreSQL", () => {
       const resumed = createAuthorizationExecution();
       expect(await resumed.getToken(scoped)).toMatchObject({ token: "access-first" });
       expect(context.require(SessionIdKey)).toBe(sessionId);
-      await adapter["authorization.completed"]!({ name: challenge.name, authorization: challenge.challenge, outcome: "authorized" } as never, channel as never);
+      await flow.settle();
       expect(editMessage).toHaveBeenCalledWith("original-linq-chat", "consent-message", { markdown: "Link connected." });
       expect(fetcher).toHaveBeenCalledOnce();
     });
