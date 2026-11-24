@@ -6,7 +6,7 @@ import { Client } from "eve/client";
 import { useState } from "react";
 import { browserPreview } from "./projection";
 
-export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoUrl: string }) {
+export default function Chat({ sessionId, demoUrl, priceLine }: { sessionId?: string; demoUrl: string; priceLine?: string }) {
   const router = useRouter();
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
@@ -88,6 +88,12 @@ export default function Chat({ sessionId, demoUrl }: { sessionId?: string; demoU
           >
             Open demo site ↗
           </button>
+          {priceLine && (
+            <p className="muted">
+              <a href={`sms:${priceLine}`}>Text Bell at {priceLine}</a> with a product link or name and a target price.
+              Try “Text me when Sony WH-1000XM5 headphones drop below £250.”
+            </p>
+          )}
           <div className="messages" aria-live="polite">
             {agent.data.messages
               .filter((message) => message.role === "user" || message.role === "assistant")

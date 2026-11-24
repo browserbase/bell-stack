@@ -1,3 +1,4 @@
+import { configuredPriceLine } from "./shopping/config";
 import { ForbiddenError, localDev, verifyHttpBasic, withAuthChallenges, type AuthResult } from "eve/channels/auth";
 
 const developmentAuth = localDev();
@@ -18,16 +19,24 @@ function operatorCredentials() {
     ? { username, password } : undefined;
 }
 
+export function priceLineForOperator(headers: Pick<Headers, "get">) {
+  return authenticatedOperator(headers.get("authorization")) ? configuredPriceLine() : undefined;
+}
+
+function authenticatedOperator(authorization: string | null) {
+  const credentials = operatorCredentials();
+  if (!credentials) return null;
+  const result = verifyHttpBasic(authorization, credentials);
+  return result.ok ? operatorIdentity(result.sessionAuth) : null;
+}
+
 export const operatorAuth = withAuthChallenges((request: Request) => {
   // Browser requests need this guard even when local development auth is used.
   // Server clients do not send browser origin metadata and authenticate normally.
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method) &&
       (request.headers.has("origin") || request.headers.has("sec-fetch-site")))
     assertOperatorOrigin(request);
-  const credentials = operatorCredentials();
-  if (!credentials) return null;
-  const result = verifyHttpBasic(request.headers.get("authorization"), credentials);
-  return result.ok ? operatorIdentity(result.sessionAuth) : null;
+  return authenticatedOperator(request.headers.get("authorization"));
 }, [{ scheme: "Basic", parameters: { realm: "Bell", charset: "UTF-8" } }]);
 
 function assertOperatorOrigin(request: Request): void {

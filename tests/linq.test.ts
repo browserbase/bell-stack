@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import linq from "../agent/channels/linq";
+import { digest } from "../server/shopping/config";
 import { ContextContainer, contextStorage } from "../node_modules/eve/dist/src/context/container.js";
 import { SessionKey } from "../node_modules/eve/dist/src/context/keys.js";
 import type { ChannelAdapter } from "../node_modules/eve/dist/src/channel/adapter.js";
@@ -92,10 +93,24 @@ describe("Bell's signed Linq webhook", () => {
     expect(dispatch).toHaveBeenCalledOnce();
     expect(dispatch).toHaveBeenCalledWith(event.data.parts[0].value, expect.objectContaining({
       context: [expect.stringContaining("Bell's private Linq")],
-      auth: expect.objectContaining({ principalId: "linq:sender-handle-id", principalType: "user", attributes: expect.objectContaining({ bell_watch_chat: event.data.chat.id, bell_watch_sender: senderNumber, bell_watch_line: receivingNumber }) }),
+      auth: expect.objectContaining({ principalId: "linq:sender-handle-id", principalType: "user", attributes: expect.objectContaining({ bell_watch_chat: event.data.chat.id, bell_watch_sender: senderNumber, bell_watch_line: receivingNumber, bell_linq_message: event.data.id, bell_linq_sent_at: event.data.sent_at }) }),
       state: { thread: expect.objectContaining({ isDM: true }) },
     }));
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("binds a price-watch request to the text and product link delivered together", async () => {
+    const event = message();
+    const request = "Tell me when this drops below $100";
+    const link = "https://example.com/product";
+    event.data.parts = [{ type: "text", value: request }, { type: "link", value: link }];
+    const { dispatch } = await deliver(event);
+    const text = `${request}\n${link}`;
+    expect(dispatch).toHaveBeenCalledWith(text, expect.objectContaining({
+      auth: expect.objectContaining({ attributes: expect.objectContaining({
+        bell_linq_message: event.data.id, bell_linq_text_hash: digest(text),
+      }) }),
+    }));
   });
 
   it("keeps follow-ups on the same Eve channel address with steer enabled", async () => {

@@ -42,6 +42,7 @@ pnpm dev
 | Poppy | Use published Poppy/MCP SDKs for read-only tools and human-approved account access | [Poppy client](docs/poppy.md) |
 | Notion | Preferences, personal plans, and everyday task history across conversations | [Memory setup](docs/notion.md) |
 | Parallel | Public-web research and persistent watches with configurable frequency | Set `PARALLEL_API_KEY` in `.env`; [watch setup](docs/monitors.md) |
+| Product price alerts | Text Bell an exact item and target price for one verified alert | [Price alert setup](docs/monitors.md#product-price-alerts) |
 | Linq | iMessage and SMS through a signed webhook and sender allowlist | [Messaging setup](docs/linq.md) |
 | Link by Stripe | Wallet authorization, spend approval, and checkout through Linq | [Sandbox and wallet setup](docs/link.md) |
 | 1Password | Operator credentials and OTP; personal Agentic Autofill is disabled by default | [Operator access](docs/browser-runtime.md#credentials-and-otp) · [Personal access status](docs/onepassword.md) |

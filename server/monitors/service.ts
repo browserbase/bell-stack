@@ -4,6 +4,9 @@ import { z } from "zod";
 import { allowed, assertOwner, creationOrigin, destinationSchema, type Destination, type Owner, queryInput, required, frequencyInput, monitorTimestamp } from "./config";
 import { eventSchema, type MonitorProvider, parallelMonitors, ProviderError, sendLinq } from "./provider";
 import { type Job, type Watch, MonitorStore, monitorStore, watchFilter } from "./store";
+import { PriceWorker } from "../shopping/worker";
+import { storageReady } from "../shopping/store";
+import { priceWatchesEnabled } from "../shopping/config";
 
 const callbackTimestamp = monitorTimestamp;
 class InvalidMonitorEvent extends Error {}
@@ -86,10 +89,28 @@ export class MonitorService {
   }
   async process() {
     const deadline = Date.now() + this.budget;
+    const price = priceWatchesEnabled() && await storageReady(this.store.pool) ? new PriceWorker(this.store) : undefined;
     await this.store.schedule();
-    let processed = 0;
+    let processed = 0, priceProcessed = 0;
+    if (price && Date.now() < deadline) {
+      try { await price.schedule(); }
+      catch { console.warn("bell_price_schedule_failed"); }
+    }
     while (processed < 30 && Date.now() < deadline) {
-      const job = await this.store.claim(); if (!job) break;
+      if (price && priceProcessed < 8 && processed % 3 === 0 && await price.runOne(deadline)) {
+        priceProcessed++;
+        processed++;
+        continue;
+      }
+      const job = await this.store.claim();
+      if (!job) {
+        if (price && priceProcessed < 8 && await price.runOne(deadline)) {
+          priceProcessed++;
+          processed++;
+          continue;
+        }
+        break;
+      }
       try {
         const resume = await this.run(job, deadline);
         if (resume) await this.store.defer(job, resume); else await this.store.finish(job);

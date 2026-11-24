@@ -1,8 +1,15 @@
 import { linqBrowserEvents, requiredEnvironmentValue } from "../lib/linq";
 import { defaultLinqAuth, linqChannel, type LinqChannelConfig } from "eve/channels/linq";
 import { z } from "zod";
+import { allowed } from "../../server/monitors/config";
+import { digest } from "../../server/shopping/config";
 
 const phoneNumber = z.string().regex(/^\+[1-9]\d{1,14}$/);
+const signedMessage = z.object({
+  id: z.string().min(1).max(256),
+  sent_at: z.iso.datetime({ offset: true }).nullish(),
+  parts: z.array(z.object({ type: z.enum(["text", "link"]), value: z.string() })).min(1),
+});
 const inboundMessage = z.object({
   direction: z.literal("inbound"),
   chat: z.object({
@@ -14,18 +21,19 @@ const inboundMessage = z.object({
 });
 
 type LinqMessage = Parameters<NonNullable<LinqChannelConfig["onMessage"]>>[1];
+type IncomingMessage = Pick<LinqMessage, "author" | "raw">;
 
-export function isAllowedBellMessage(message: Pick<LinqMessage, "author" | "raw">): boolean {
-  if (message.author.isBot) return false;
+function messageDestination(message: IncomingMessage) {
+  if (message.author.isBot) return;
   const incoming = inboundMessage.safeParse(message.raw);
-  const receivingNumber = phoneNumber.safeParse(process.env.BELL_LINQ_PHONE_NUMBER?.trim());
-  const allowedSenders = z.array(phoneNumber).nonempty().safeParse(
-    (process.env.BELL_LINQ_ALLOWED_SENDERS ?? "").split(",").map((value) => value.trim()),
-  );
+  if (!incoming.success) return;
+  const { chat, sender_handle } = incoming.data;
+  const destination = { chat: chat.id, sender: sender_handle.handle, line: chat.owner_handle.handle };
+  if (allowed(destination)) return destination;
+}
 
-  return incoming.success && receivingNumber.success && allowedSenders.success
-    && incoming.data.chat.owner_handle.handle === receivingNumber.data
-    && allowedSenders.data.includes(incoming.data.sender_handle.handle);
+export function isAllowedBellMessage(message: IncomingMessage): boolean {
+  return !!messageDestination(message);
 }
 
 export default linqChannel({
@@ -37,11 +45,19 @@ export default linqChannel({
   },
   turnPolicy: "steer",
   onMessage(_context, message) {
-    if (!isAllowedBellMessage(message)) return null;
-    const auth = defaultLinqAuth(message);
-    const incoming = inboundMessage.parse(message.raw);
+    const destination = messageDestination(message);
+    if (!destination) return null;
+    const signed = signedMessage.safeParse(message.raw);
+    const signedAttributes = signed.success && message.text.trim() ? {
+      bell_linq_message: signed.data.id,
+      bell_linq_text_hash: digest(message.text.trim()),
+      ...(signed.data.sent_at ? { bell_linq_sent_at: signed.data.sent_at } : {}),
+    } : {};
+    const baseAuth = defaultLinqAuth(message);
+    const auth = { ...baseAuth, attributes: { ...baseAuth.attributes, ...signedAttributes,
+      bell_watch_chat: destination.chat, bell_watch_sender: destination.sender, bell_watch_line: destination.line } };
     return {
-      auth: { ...auth, attributes: { ...auth.attributes, bell_watch_chat: incoming.chat.id, bell_watch_sender: incoming.sender_handle.handle, bell_watch_line: incoming.chat.owner_handle.handle } },
+      auth,
       context: [
         "This request arrived through Bell's private Linq iMessage or SMS channel. "
         + "Reply concisely in this chat. Use the same browser for follow-up requests. "
