@@ -35,8 +35,9 @@ export async function readBounded(response: Response, maxBytes = 1_048_576): Pro
     return Buffer.concat(chunks).toString("utf8");
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
-export async function request(url: string, key: string, method = "GET", body?: unknown, bearer = false): Promise<unknown> {
-  const response = await fetch(url, { method, headers: { "Content-Type": "application/json", ...(bearer ? { Authorization: `Bearer ${key}` } : { "x-api-key": key }) }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(8_000), redirect: "error", cache: "no-store" });
+export async function request(url: string, key: string, method = "GET", body?: unknown, bearer = false, deadline?: AbortSignal): Promise<unknown> {
+  const timeout = AbortSignal.timeout(8_000);
+  const response = await fetch(url, { method, headers: { "Content-Type": "application/json", ...(bearer ? { Authorization: `Bearer ${key}` } : { "x-api-key": key }) }, body: body === undefined ? undefined : JSON.stringify(body), signal: deadline ? AbortSignal.any([deadline, timeout]) : timeout, redirect: "error", cache: "no-store" });
   if (!response.ok) {
     await response.body?.cancel();
     const value = response.headers.get("retry-after"), seconds = Number(value);
@@ -67,7 +68,10 @@ export const parallelMonitors: MonitorProvider = {
   },
   async cancel(id) { await call(`${path(id)}/cancel`, "POST"); },
 };
+export function postLinqMessage(destination: Destination, text: string, key: string, signal?: AbortSignal) {
+  return request(`https://api.linqapp.com/api/partner/v3/chats/${encodeURIComponent(destination.chat)}/messages`, required("LINQ_API_KEY"), "POST", { message: { parts: [{ type: "text", value: text }], idempotency_key: key } }, true, signal);
+}
 export async function sendLinq(destination: Destination, text: string, key: string): Promise<string> {
-  const response = await request(`https://api.linqapp.com/api/partner/v3/chats/${encodeURIComponent(destination.chat)}/messages`, required("LINQ_API_KEY"), "POST", { message: { parts: [{ type: "text", value: text }], idempotency_key: key } }, true);
+  const response = await postLinqMessage(destination, text, key);
   return z.object({ message: z.object({ id: z.string() }) }).parse(response).message.id;
 }

@@ -6,10 +6,14 @@ export interface Destination { chat: string; sender: string; line: string }
 export const queryInput = z.string().trim().min(1).max(2_000);
 const phone = z.string().regex(/^\+[1-9]\d{1,14}$/);
 export const destinationSchema = z.object({ chat: z.string().min(1).max(256), sender: phone, line: phone });
-export function allowed(destination: Destination): boolean {
+export function configuredLinq() {
   const line = phone.safeParse(process.env.BELL_LINQ_PHONE_NUMBER?.trim());
   const senders = z.array(phone).nonempty().safeParse((process.env.BELL_LINQ_ALLOWED_SENDERS ?? "").split(",").map(s => s.trim()));
-  return line.success && senders.success && line.data === destination.line && senders.data.includes(destination.sender);
+  if (line.success && senders.success) return { line: line.data, senders: senders.data };
+}
+export function allowed(destination: Destination): boolean {
+  const config = configuredLinq();
+  return !!config && config.line === destination.line && config.senders.includes(destination.sender);
 }
 export function required(name: string): string {
   const value = process.env[name]?.trim();

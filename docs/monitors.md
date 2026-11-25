@@ -92,3 +92,13 @@ Database tests create isolated schemas and exercise concurrency, restart, uncert
 [Parallel Monitor API](https://docs.parallel.ai/api-reference/monitor/create-monitor) · [Monitor events](https://docs.parallel.ai/monitor-api/monitor-events) · [Webhook setup](https://docs.parallel.ai/resources/webhook-setup) · [Vercel Cron](https://vercel.com/docs/cron-jobs/manage-cron-jobs)
 
 [Update monitor frequency](https://docs.parallel.ai/api-reference/monitor/update-monitor)
+
+## Product price alerts
+
+An allowlisted shopper can text an exact product name or public link and a target price, such as “Text me when this drops below £250.” Bell uses Parallel Shopping Search to find listings for a named product and verifies the product, price and stock on the merchant page. “Below” excludes the target. “Or less” includes it. The target applies to the item price before separately charged tax and shipping.
+
+Bell reports an in-stock match immediately. Otherwise, verified listings are due for another check after an hour, for up to 30 days. Each minute's scheduler run handles up to eight price jobs across listing checks, sends, and retries. A backlog can delay checks and alerts. The first in-stock match triggers one text with the observed price and merchant link. A link pins one listing. A name uses the listings found at setup. Use the same chat to list or stop watches.
+
+Apply `migrations/007_price_watches.sql` and `migrations/008_price_action_keys.sql` after migrations 004 and 005. Installations with migration 007 already applied need migration 008 before running this version. Configure the existing authenticated minute scheduler, database and signed Linq channel. Set `PARALLEL_API_KEY` for product-name searches. Enable `BELL_PRICE_WATCHES_ENABLED` once these are configured. An authenticated demo operator can then open the texting flow from the web starter.
+
+Verify that a qualifying price drop reaches the intended phone before adding shoppers to the allowlist. When a send job exhausts its retries, Bell closes the watch. Listing it shows `not_sent` if Bell never attempted dispatch or `unresolved` if Linq may have received the message. Check `bell_price_jobs.last_error` for the cause. Set `BELL_PRICE_WATCHES_ENABLED=false` to pause price watches.

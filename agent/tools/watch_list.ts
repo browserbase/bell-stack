@@ -1,14 +1,18 @@
 import { defineTool, toolOutput } from "eve/tools";
 import { z } from "zod";
+import { priceWatches } from "../../server/shopping/watches";
 import { monitors } from "../../server/monitors/service";
-import { watchIdentity, safeWatch } from "../lib/monitors";
+import { watchIdentity, watchDestination, safeWatch } from "../lib/monitors";
 
 export default defineTool({
-  description: "List this sender's watches, recent updates, and pending failures. Use this to reconcile uncertain creation before making another watch, or to find the ID of a watch to update or stop. Returns one page of 50 watches, open ones (still running or still needing repair) before cancelled and failed ones, newest first within each. When next_cursor is not null there are older watches: call again with that value as cursor to read the next page.",
+  description: "List watches with their IDs and status. Use kind=price for price alerts in this chat. Generic watches include recent updates and pending failures, with open watches first. Use the returned next_cursor to read more results.",
   inputSchema: z.object({
-    status: z.enum(["all", "open", "closed"]).default("all").describe("Which watches to return: all, only open ones (not cancelled or failed), or only closed ones."),
+    kind: z.enum(["generic", "price"]).default("generic"),
+    status: z.enum(["all", "open", "closed"]).default("all"),
     cursor: z.string().max(512).optional().describe("The next_cursor from a previous watch_list call, to read the next page of older watches."),
   }),
-  execute: (input, ctx) => safeWatch(() => monitors().list(watchIdentity(ctx), { status: input.status, cursor: input.cursor })),
+  execute: ({ kind, status, cursor }, ctx) => safeWatch(async () => kind === "price"
+    ? priceWatches().list(watchIdentity(ctx), watchDestination(ctx), status, cursor ? z.uuid().parse(cursor) : undefined)
+    : monitors().list(watchIdentity(ctx), { status, cursor })),
   toModelOutput: output => toolOutput.json(output),
 });
