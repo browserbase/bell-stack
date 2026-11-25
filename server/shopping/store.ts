@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import type { MonitorStore } from "../monitors/store";
 import type { Destination, Owner } from "../monitors/config";
 import { digest, priceCheckHours } from "./config";
-import { normalized, type Observation, type SavedWatchTerms, type WatchTerms } from "./evidence";
+import { normalized, priceMinor, watchTerms, type Observation, type SavedWatchTerms, type WatchTerms } from "./evidence";
 
 export type Queryable = Pool | PoolClient;
 export interface Inbound {
@@ -37,8 +37,18 @@ const actionParams = (inbound: Inbound, action: PriceAction) => [
   inbound.owner.issuer, inbound.owner.id, inbound.destination.chat, inbound.destination.line, inbound.messageId,
   action.name, action.request,
 ];
-const actionScope = `issuer=$1 AND owner_id=$2 AND chat=$3 AND line=$4 AND message_id=$5 AND action=$6
-  AND operation_key=bell_price_operation_key($6,$7)`;
+const actionScope = "issuer=$1 AND owner_id=$2 AND chat=$3 AND line=$4 AND message_id=$5 AND action=$6";
+const operationScope = `${actionScope} AND operation_key=bell_price_operation_key($6,$7)`;
+
+function enrollmentKey(request: unknown) {
+  const terms = watchTerms.parse(request);
+  terms.amount = String(priceMinor(terms.amount, terms.currency));
+  if (terms.gtin) terms.gtin = terms.gtin.padStart(14, "0");
+  for (const key of ["product", "seller", "brand", "mpn", "variant"] as const) {
+    if (terms[key]) terms[key] = normalized(terms[key]);
+  }
+  return JSON.stringify(Object.fromEntries(Object.entries(terms).sort(([a], [b]) => a.localeCompare(b))));
+}
 
 export async function storageReady(db: Queryable) {
   const result = await db.query<{ present: boolean }>("SELECT to_regclass('bell_price_jobs') IS NOT NULL AS present");
@@ -60,6 +70,15 @@ export const lockEnrollment = (db: Queryable, key: string) =>
   db.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [key]);
 
 export async function rememberAction(db: Queryable, inbound: Inbound, action: PriceAction) {
+  if (action.name === "enroll") {
+    // Serialize equivalent enrollments while retaining the requests behind existing generated keys.
+    await lockEnrollment(db, JSON.stringify(actionParams(inbound, action).slice(0, 6)));
+    const key = enrollmentKey(action.request);
+    const { rows } = await db.query<{ request: unknown; outcome: unknown }>(`SELECT request,outcome FROM bell_price_actions
+      WHERE ${actionScope} ORDER BY operation_key=bell_price_operation_key($6,$7) DESC`, actionParams(inbound, action));
+    const previous = rows.find(row => enrollmentKey(row.request) === key);
+    if (previous) return previous;
+  }
   await db.query(`INSERT INTO bell_price_actions(issuer,owner_id,chat,line,message_id,action,request)
     VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`, actionParams(inbound, action));
   return lockAction(db, inbound, action);
@@ -67,11 +86,11 @@ export async function rememberAction(db: Queryable, inbound: Inbound, action: Pr
 
 export async function lockAction(db: Queryable, inbound: Inbound, action: PriceAction) {
   return (await db.query<{ request: unknown; outcome: unknown }>(`SELECT request,outcome FROM bell_price_actions
-    WHERE ${actionScope} FOR UPDATE`, actionParams(inbound, action))).rows[0];
+    WHERE ${operationScope} FOR UPDATE`, actionParams(inbound, action))).rows[0];
 }
 
 export function saveActionOutcome(db: Queryable, inbound: Inbound, action: PriceAction, outcome: unknown) {
-  return db.query(`UPDATE bell_price_actions SET outcome=$8 WHERE ${actionScope}`, [...actionParams(inbound, action), outcome]);
+  return db.query(`UPDATE bell_price_actions SET outcome=$8 WHERE ${operationScope}`, [...actionParams(inbound, action), outcome]);
 }
 
 export function equivalentWatch(inbound: Inbound, terms: WatchTerms, identity: string) {

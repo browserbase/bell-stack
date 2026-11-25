@@ -92,11 +92,11 @@ export class PriceWatches {
   async enroll(inbound: Inbound, input: WatchTerms, signal?: AbortSignal) {
     checkDestination(inbound.owner, inbound.destination);
     requirePriceEnrollment();
-    const action = { name: "enroll", request: watchTerms.parse(input) } as const;
-    const saved = await this.store.transaction(db => rememberAction(db, inbound, action));
+    const saved = await this.store.transaction(db => rememberAction(db, inbound, { name: "enroll", request: watchTerms.parse(input) }));
     if (saved.outcome) return this.result(saved.outcome as Decision);
 
     const terms = watchTerms.parse(saved.request);
+    const action = { name: "enroll", request: terms } as const;
     const deadline = AbortSignal.timeout(14_000);
     // Read merchant pages outside the transaction so they never hold a database lock.
     const resolved = identifyOffers(terms, await readOffers(terms, this.sources, signal ? AbortSignal.any([signal, deadline]) : deadline));

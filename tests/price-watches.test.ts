@@ -531,6 +531,61 @@ describe.skipIf(!databaseUrl)("Durable price alerts", () => {
     expect(await count("bell_price_watches")).toBe(2);
   });
 
+  it.each([
+    { seller: "example shop" }, { seller: "Example  Shop" }, { product: "phone blue 128 gb" },
+    { variant: "BLUE-128" }, { brand: "ACME", mpn: "BLUE-128" }, { seller: "ＥＸＡＭＰＬＥ\u00a0ＳＨＯＰ" },
+    { seller: "example shop", gtin: undefined },
+  ])("preserves cancellation when an enrollment replay changes only normalization: %j", async change => {
+    const message = inbound();
+    const request = { ...terms, seller: "Example Shop", variant: "blue-128", brand: "Acme", mpn: "blue-128" };
+    const id = watchId(await watches.enroll(message, request));
+    await watches.stop(await stopMessage(), id.slice(6));
+    expect(await watches.enroll(message, { ...request, ...change })).toMatchObject({ id, status: "stopped" });
+    expect(verify).toHaveBeenCalledOnce();
+    expect(await count("bell_price_actions")).toBe(2);
+    amount = 19_900;
+    await due();
+    await tick();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("deduplicates concurrent normalized retries with a saved request: %s", async saved => {
+    const message = inbound();
+    const request = { ...terms, seller: "Example Shop" };
+    if (saved) await pool.query(`INSERT INTO bell_price_actions(issuer,owner_id,chat,line,message_id,action,request)
+      VALUES ($1,$2,$3,$4,$5,'enroll',$6)`,
+    [owner.issuer, owner.id, destination.chat, destination.line, message.messageId, request]);
+    const results = await Promise.all(["example shop", "EXAMPLE  SHOP"].map(seller => watches.enroll(message, { ...request, seller })));
+    expect(results[0]).toEqual(results[1]);
+    const actions = (await pool.query("SELECT request,outcome FROM bell_price_actions")).rows;
+    expect(actions).toEqual([{ request: expect.objectContaining(terms), outcome: { status: "enrolled", id: watchId(results[0]).slice(6) } }]);
+    if (saved) expect(actions[0].request).toEqual(request);
+    expect(await count("bell_price_watches")).toBe(1);
+  });
+
+  it("preserves a stopped outcome when the same GTIN is zero-padded on replay", async () => {
+    verify.mockImplementation(async listing => ({ ...verified(amount, true, listing), identity: "gtin:00012345678905" }));
+    const message = inbound();
+    const id = watchId(await watches.enroll(message, { ...terms, gtin: "012345678905" }));
+    await watches.stop(await stopMessage(), id.slice(6));
+    expect(await watches.enroll(message, { ...terms, gtin: "00012345678905" })).toMatchObject({ id, status: "stopped" });
+    expect(verify).toHaveBeenCalledOnce();
+    expect(await count("bell_price_watches")).toBe(1);
+  });
+
+  it("keeps strict and inclusive targets distinct within the same text", async () => {
+    const message = inbound();
+    const strict = watchId(await watches.enroll(message, terms));
+    const inclusive = watchId(await watches.enroll(message, { ...terms, comparison: "at_or_below" }));
+    expect(inclusive).not.toBe(strict);
+    amount = 25_000;
+    await due();
+    await tick();
+    await tick();
+    expect(send).toHaveBeenCalledExactlyOnceWith(destination, expect.any(String), `bell-price-${inclusive.slice(6)}`, expect.any(AbortSignal));
+    expect((await watches.list(owner, destination, "open")).watches).toMatchObject([{ id: strict, status: "active" }]);
+  });
+
   it("preserves enrollment and stop outcomes already saved by migration 007", async () => {
     const legacySchema = `${schema}_legacy`;
     await admin.query(`CREATE SCHEMA ${legacySchema}`);
@@ -543,13 +598,13 @@ describe.skipIf(!databaseUrl)("Durable price alerts", () => {
       const stopped = { status: "stopped", id: `price:${stoppedId}` };
       await legacy.query(`INSERT INTO bell_price_actions(issuer,owner_id,chat,line,message_id,action,request,outcome)
         VALUES ($1,$2,$3,$4,$5,'enroll',$6,$7), ($1,$2,$3,$4,$5,'stop',$8,$9)`,
-      [owner.issuer, owner.id, destination.chat, destination.line, message.messageId, terms, match, { id: stoppedId }, stopped]);
+      [owner.issuer, owner.id, destination.chat, destination.line, message.messageId, { ...terms, seller: "Example Shop" }, match, { id: stoppedId }, stopped]);
 
       const migration = await readFile(new URL("../migrations/008_price_action_keys.sql", import.meta.url), "utf8");
       await legacy.query(migration);
       await legacy.query(migration);
       const upgraded = new PriceWatches(new MonitorStore(legacy), sources);
-      expect(await upgraded.enroll(message, { ...terms, amount: "250.00" })).toEqual(match);
+      expect(await upgraded.enroll(message, { ...terms, amount: "250.00", seller: "EXAMPLE  SHOP" })).toEqual(match);
       expect(verify).not.toHaveBeenCalled();
       expect(await upgraded.stop(message, randomUUID())).toEqual({ status: "not_found" });
       expect(await upgraded.stop(message, stoppedId)).toEqual(stopped);
