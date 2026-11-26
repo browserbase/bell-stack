@@ -61,6 +61,39 @@ describe("hosted recording privacy", () => {
     await browser.close();
   });
 
+  it("replaces a personal browser when the rollout flag is off", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("ONEPASSWORD_ENABLED", "false");
+    vi.stubEnv("BROWSERBASE_1PASSWORD_EXTENSION_ID", "synthetic-extension");
+    mocks.retrieve.mockResolvedValue({
+      userMetadata: {
+        networkLogging: "false",
+        sessionRecording: "false",
+        privateContext: "true",
+        onepasswordExtension: "synthetic-extension",
+      },
+    });
+    const remote = {
+      sessionId: "replacement-browser", closed: false, close: vi.fn(async () => {}),
+      context: { pages: async () => [] },
+    };
+    vi.spyOn(browserbase, "launch").mockResolvedValue(remote as never);
+    const connect = vi.spyOn(browserbase, "connect");
+    vi.spyOn(Stagehand, "create").mockResolvedValue({ close: async () => {} } as never);
+    const state: ConversationState = {
+      id: "personal-flag-off", traces: [],
+      browser: { provider: "browserbase", status: "idle", sessionId: "previous-browser" },
+    };
+    const browser = new BrowserSession(state);
+    const started = browser.start();
+    await vi.runAllTimersAsync();
+    await started;
+    expect(connect).not.toHaveBeenCalled();
+    expect(mocks.update).toHaveBeenCalledWith("previous-browser", { status: "REQUEST_RELEASE" });
+    expect(state.browser.sessionId).toBe("replacement-browser");
+    await browser.close();
+  });
+
   it.each(unsafeMetadata)("refuses handoff to unsafe privacy markers: %j", async userMetadata => {
     mocks.retrieve.mockResolvedValue({ userMetadata });
     const token = issueBrowserHandoffToken({ eveSessionId: "eve-session", browserSessionId: "browser-session" }, { secret });
